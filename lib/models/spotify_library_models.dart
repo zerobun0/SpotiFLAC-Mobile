@@ -93,7 +93,7 @@ SpotifyPage<SpotifyPlaylistSummary> parsePlaylistsPage(
 ) {
   final items = (json['items'] as List? ?? const [])
       .map((raw) {
-        final map = raw as Map<String, dynamic>;
+        final map = _asStringMap(raw);
         final images = map['images'] as List? ?? const [];
         final owner = _asStringMap(map['owner']);
         final tracks = _asStringMap(map['tracks']);
@@ -115,14 +115,13 @@ SpotifyPage<SpotifyLikedTrack> parseLikedTracksPage(
   Map<String, dynamic> json,
 ) {
   final items = (json['items'] as List? ?? const [])
-      .map(
-        (raw) => SpotifyLikedTrack(
-          addedAt: (raw as Map<String, dynamic>)['added_at'] as String,
-          track: SpotifyApiTrack.fromJson(
-            raw['track'] as Map<String, dynamic>,
-          ),
-        ),
-      )
+      .map((raw) {
+        final entry = _asStringMap(raw);
+        return SpotifyLikedTrack(
+          addedAt: entry['added_at'] as String,
+          track: SpotifyApiTrack.fromJson(_asStringMap(entry['track'])),
+        );
+      })
       .toList();
   return SpotifyPage(items: items, nextUrl: json['next'] as String?);
 }
@@ -135,7 +134,7 @@ SpotifyPage<SpotifyFollowedArtist> parseFollowedArtistsPage(
       : json;
   final items = (artistsBlock['items'] as List? ?? const [])
       .map((raw) {
-        final map = raw as Map<String, dynamic>;
+        final map = _asStringMap(raw);
         final images = map['images'] as List? ?? const [];
         return SpotifyFollowedArtist(
           id: map['id'] as String,
