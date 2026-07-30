@@ -70,6 +70,7 @@ class SpotifyLibraryState {
 
 class SpotifyLibraryNotifier extends Notifier<SpotifyLibraryState> {
   late final SpotifyLibraryService _service;
+  int _syncGeneration = 0;
 
   @override
   SpotifyLibraryState build() {
@@ -80,6 +81,8 @@ class SpotifyLibraryNotifier extends Notifier<SpotifyLibraryState> {
   }
 
   Future<void> syncAll() async {
+    _syncGeneration++;
+    final generation = _syncGeneration;
     state = state.copyWith(isLoading: true, clearError: true);
     try {
       final playlists = await _collectAllPages(
@@ -104,6 +107,7 @@ class SpotifyLibraryNotifier extends Notifier<SpotifyLibraryState> {
         _syncRemainingLikedTracks(
           LikedTracksAccumulation(items: firstPage.items, seenUrls: {}),
           firstPage.nextUrl,
+          generation,
         ),
       );
     } catch (e) {
@@ -125,10 +129,17 @@ class SpotifyLibraryNotifier extends Notifier<SpotifyLibraryState> {
   Future<void> _syncRemainingLikedTracks(
     LikedTracksAccumulation acc,
     String? nextUrl,
+    int generation,
   ) async {
     var current = acc;
     var url = nextUrl;
     while (url != null) {
+      // Guard against stale async results: if a newer syncAll() has started,
+      // stop this background loop instead of overwriting newer state.
+      if (generation != _syncGeneration) {
+        _log.d('Background liked-tracks pagination abandoned for newer sync');
+        return;
+      }
       try {
         final page = await _service.getLikedTracks(pageUrl: url);
         final next = appendLikedTracksPage(current, page);
@@ -141,6 +152,13 @@ class SpotifyLibraryNotifier extends Notifier<SpotifyLibraryState> {
         url = page.nextUrl;
       } catch (e) {
         _log.w('Background liked-tracks page fetch failed: $e');
+        // Handle auth exceptions the same way syncAll() does, to keep UI in sync.
+        if (e is SpotifyAuthException) {
+          await ref
+              .read(spotifyAuthProvider.notifier)
+              .logout(error: _spotifySessionExpiredMessage);
+          state = state.copyWith(error: _spotifySessionExpiredMessage);
+        }
         return;
       }
     }
