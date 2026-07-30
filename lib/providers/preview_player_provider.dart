@@ -54,6 +54,7 @@ class PreviewPlayerController extends Notifier<PreviewPlayerState> {
   AudioPlayer? _player;
   final List<StreamSubscription<dynamic>> _subscriptions = [];
   AppLifecycleListener? _lifecycleListener;
+  Future<void> Function()? _exclusiveHook;
 
   @override
   PreviewPlayerState build() {
@@ -68,6 +69,7 @@ class PreviewPlayerController extends Notifier<PreviewPlayerState> {
       if (state.isActive) await stop();
     }
 
+    _exclusiveHook = exclusiveHook;
     registerExclusiveAudioHook(exclusiveHook);
     ref.onDispose(() {
       unregisterExclusiveAudioHook(exclusiveHook);
@@ -177,6 +179,15 @@ class PreviewPlayerController extends Notifier<PreviewPlayerState> {
     try {
       await musicPlayerHandler?.pause();
     } catch (_) {}
+
+    // Stop the sibling secondary player (e.g. an active Spotify library
+    // stream) too — musicPlayerHandler?.pause() above only reaches the MAIN
+    // player; the two secondary players are otherwise never told about each
+    // other and could both end up playing at once.
+    final hook = _exclusiveHook;
+    if (hook != null) {
+      await stopOtherExclusiveAudio(except: hook);
+    }
 
     state = PreviewPlayerState(
       activeUrl: trimmed,

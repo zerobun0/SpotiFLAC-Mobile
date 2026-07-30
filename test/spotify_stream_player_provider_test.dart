@@ -30,4 +30,18 @@ void main() {
       expect(cleared.status, StreamPlaybackStatus.idle);
     });
   });
+
+  group('isDuplicateStreamRequest', () {
+    test('is false when nothing is in flight', () {
+      expect(isDuplicateStreamRequest(null, 'track-1'), isFalse);
+    });
+
+    test('is true for a second call for the same in-flight track', () {
+      expect(isDuplicateStreamRequest('track-1', 'track-1'), isTrue);
+    });
+
+    test('is false for a different track superseding the in-flight one', () {
+      expect(isDuplicateStreamRequest('track-1', 'track-2'), isFalse);
+    });
+  });
 }

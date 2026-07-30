@@ -917,6 +917,25 @@ void unregisterExclusiveAudioHook(Future<void> Function() hook) {
   _exclusiveAudioHooks.remove(hook);
 }
 
+/// Stops every registered exclusive-audio owner except [except] itself.
+///
+/// The main music player already stops both secondary players before it
+/// starts, by iterating `_exclusiveAudioHooks` directly inside `_playIndex`.
+/// That direct iteration is wrong for use *between* the two secondary
+/// players (preview player vs. Spotify stream player) because it would also
+/// invoke the caller's own hook, stopping the very playback the caller is
+/// about to start. This lets a secondary player stop its sibling(s) only.
+Future<void> stopOtherExclusiveAudio({
+  required Future<void> Function() except,
+}) async {
+  for (final hook in _exclusiveAudioHooks.toList()) {
+    if (identical(hook, except)) continue;
+    try {
+      await hook();
+    } catch (_) {}
+  }
+}
+
 Future<MusicPlayerHandler> initMusicPlayer() async {
   if (_handler != null) return _handler!;
   final existingFuture = _initFuture;
