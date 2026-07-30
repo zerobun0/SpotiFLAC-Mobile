@@ -261,7 +261,14 @@ class RepoNotifier extends Notifier<RepoState> {
       await refresh();
       await autoSyncExtensions();
 
-      state = state.copyWith(isInitialized: true, isLoading: false);
+      // Auto-sync failures for individual extensions are non-fatal to
+      // initialization (the registry itself loaded fine), so don't let a
+      // per-extension error linger in state once init has succeeded.
+      state = state.copyWith(
+        isInitialized: true,
+        isLoading: false,
+        clearError: true,
+      );
       _log.i('Extension store initialized (registryUrl: $savedUrl)');
     } catch (e) {
       _log.e('Failed to initialize store: $e');
@@ -282,10 +289,14 @@ class RepoNotifier extends Notifier<RepoState> {
     final extensionsDir = '${appDir.path}/extensions';
 
     for (final ext in targets) {
-      if (!ext.isInstalled) {
-        await installExtension(ext.id, tempDir.path, extensionsDir);
-      } else {
-        await updateExtension(ext.id, tempDir.path);
+      final success = !ext.isInstalled
+          ? await installExtension(ext.id, tempDir.path, extensionsDir)
+          : await updateExtension(ext.id, tempDir.path);
+
+      if (!success) {
+        // Logged only — a single extension failing to auto-sync shouldn't
+        // surface as a lingering registry-level error (see initialize()).
+        _log.w('Auto-sync failed for extension: ${ext.id}');
       }
     }
   }
