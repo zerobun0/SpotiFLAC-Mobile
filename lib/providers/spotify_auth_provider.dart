@@ -103,6 +103,19 @@ class SpotifyAuthNotifier extends Notifier<SpotifyAuthState>
         graceWindow: _stuckLoginGraceWindow,
       )) {
         _log.w('Spotify login stuck after resume; resetting to loggedOut');
+        // Resolve the abandoned Completer *before* nulling it out, so
+        // the original login() coroutine's own `await ...timeout(...)`
+        // unblocks immediately and runs its normal cancelled-path
+        // (the `error != null` branch) instead of sitting suspended
+        // for up to 5 more minutes on its own independent timeout —
+        // which would otherwise fire later and unconditionally log
+        // the user out even if a subsequent login attempt succeeded
+        // in the meantime. Guarded the same way _handleCallback guards
+        // against completing an already-completed Completer.
+        final pending = _pendingLogin;
+        if (pending != null && !pending.isCompleted) {
+          pending.complete({'error': 'cancelled'});
+        }
         _pendingLogin = null;
         _pendingState = null;
         _pendingPkce = null;
