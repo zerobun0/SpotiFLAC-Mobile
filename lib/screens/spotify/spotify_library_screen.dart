@@ -25,6 +25,18 @@ class _SpotifyLibraryScreenState extends ConsumerState<SpotifyLibraryScreen> {
   @override
   Widget build(BuildContext context) {
     final library = ref.watch(spotifyLibraryProvider);
+    final streamState = ref.watch(spotifyStreamPlayerProvider);
+
+    ref.listen<StreamPlaybackState>(spotifyStreamPlayerProvider, (
+      previous,
+      next,
+    ) {
+      if (next.status == StreamPlaybackStatus.error) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(next.error ?? 'Failed to stream track')),
+        );
+      }
+    });
 
     return DefaultTabController(
       length: 3,
@@ -70,9 +82,24 @@ class _SpotifyLibraryScreenState extends ConsumerState<SpotifyLibraryScreen> {
                     itemCount: library.likedTracks.length,
                     itemBuilder: (context, index) {
                       final liked = library.likedTracks[index];
+                      final isResolvingThisTrack =
+                          streamState.currentTrack?.id == liked.track.id &&
+                          (streamState.status ==
+                                  StreamPlaybackStatus.resolving ||
+                              streamState.status ==
+                                  StreamPlaybackStatus.buffering);
                       return ListTile(
                         title: Text(liked.track.name),
                         subtitle: Text(liked.track.artistNames),
+                        trailing: isResolvingThisTrack
+                            ? const SizedBox(
+                                width: 20,
+                                height: 20,
+                                child: CircularProgressIndicator(
+                                  strokeWidth: 2,
+                                ),
+                              )
+                            : null,
                         onTap: () => ref
                             .read(spotifyStreamPlayerProvider.notifier)
                             .streamTrack(spotifyApiTrackToTrack(liked.track)),

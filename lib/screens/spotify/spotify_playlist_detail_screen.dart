@@ -67,6 +67,19 @@ class _SpotifyPlaylistDetailScreenState
 
   @override
   Widget build(BuildContext context) {
+    final streamState = ref.watch(spotifyStreamPlayerProvider);
+
+    ref.listen<StreamPlaybackState>(spotifyStreamPlayerProvider, (
+      previous,
+      next,
+    ) {
+      if (next.status == StreamPlaybackStatus.error) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(next.error ?? 'Failed to stream track')),
+        );
+      }
+    });
+
     return Scaffold(
       appBar: AppBar(title: Text(widget.playlistName)),
       body: _isLoading
@@ -77,9 +90,20 @@ class _SpotifyPlaylistDetailScreenState
               itemCount: _tracks.length,
               itemBuilder: (context, index) {
                 final track = _tracks[index];
+                final isResolvingThisTrack =
+                    streamState.currentTrack?.id == track.id &&
+                    (streamState.status == StreamPlaybackStatus.resolving ||
+                        streamState.status == StreamPlaybackStatus.buffering);
                 return ListTile(
                   title: Text(track.name),
                   subtitle: Text(track.artistNames),
+                  trailing: isResolvingThisTrack
+                      ? const SizedBox(
+                          width: 20,
+                          height: 20,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                      : null,
                   onTap: () => ref
                       .read(spotifyStreamPlayerProvider.notifier)
                       .streamTrack(spotifyApiTrackToTrack(track)),
