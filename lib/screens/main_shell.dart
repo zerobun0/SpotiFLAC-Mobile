@@ -5,6 +5,7 @@ import 'package:device_info_plus/device_info_plus.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:path_provider/path_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:spotiflac_android/l10n/l10n.dart';
 import 'package:spotiflac_android/providers/download_queue_provider.dart';
@@ -54,6 +55,7 @@ class _MainShellState extends ConsumerState<MainShell>
   bool _safRepairDialogVisible = false;
   StreamSubscription<String>? _shareSubscription;
   DateTime? _lastBackPress;
+  DateTime? _lastExtensionSyncCheck;
   final GlobalKey<NavigatorState> _homeTabNavigatorKey =
       ShellNavigationService.homeTabNavigatorKey;
   final GlobalKey<NavigatorState> _libraryTabNavigatorKey =
@@ -120,6 +122,7 @@ class _MainShellState extends ConsumerState<MainShell>
       _initialSafRepairComplete = true;
       if (!mounted) return;
       _setupShareListener();
+      unawaited(_initializeExtensionRepo());
       await _checkSafMigration();
       final updateDialogShown = await _checkForUpdates();
       if (!updateDialogShown) {
@@ -132,6 +135,34 @@ class _MainShellState extends ConsumerState<MainShell>
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed && _initialSafRepairComplete) {
       unawaited(_repairSafAccessIfNeeded());
+      unawaited(_maybeSyncExtensionsOnResume());
+    }
+  }
+
+  Future<void> _initializeExtensionRepo() async {
+    try {
+      final cacheDir = await getApplicationCacheDirectory();
+      await ref.read(repoProvider.notifier).initialize(cacheDir.path);
+    } catch (e) {
+      _log.w('Extension auto-bundle failed: $e');
+    }
+  }
+
+  /// Re-checks the extension registry for updates at most once an hour of
+  /// foreground time — this app has no background service, so "periodic" is
+  /// necessarily tied to how often the user actually resumes the app.
+  Future<void> _maybeSyncExtensionsOnResume() async {
+    final now = DateTime.now();
+    if (_lastExtensionSyncCheck != null &&
+        now.difference(_lastExtensionSyncCheck!) < const Duration(hours: 1)) {
+      return;
+    }
+    _lastExtensionSyncCheck = now;
+    try {
+      await ref.read(repoProvider.notifier).refresh(forceRefresh: true);
+      await ref.read(repoProvider.notifier).autoSyncExtensions();
+    } catch (e) {
+      _log.w('Periodic extension sync failed: $e');
     }
   }
 
