@@ -9,6 +9,15 @@ Map<String, dynamic> _asStringMap(dynamic value) {
   return const {};
 }
 
+// Same cast as [_asStringMap] but returns null instead of an empty map when
+// [value] isn't a Map, so callers can distinguish "absent" from "present but
+// empty" — needed by [parsePlaylistTracksPage] to tell a removed/null track
+// apart from a track that merely has empty nested objects.
+Map<String, dynamic>? _asStringMapOrNull(dynamic value) {
+  if (value is Map) return value.cast<String, dynamic>();
+  return null;
+}
+
 class SpotifyPage<T> {
   final List<T> items;
   final String? nextUrl;
@@ -123,6 +132,33 @@ SpotifyPage<SpotifyLikedTrack> parseLikedTracksPage(
         );
       })
       .toList();
+  return SpotifyPage(items: items, nextUrl: json['next'] as String?);
+}
+
+/// Parses a `GET /playlists/{id}/tracks` page, skipping items whose track is
+/// missing or has a null id.
+///
+/// Real playlists commonly contain both:
+///  - tracks removed from Spotify's catalog, which come back as
+///    `"track": null`;
+///  - local (non-Spotify) files added to the playlist, which come back as
+///    `"track": {"id": null, ...}`.
+///
+/// Naively casting `item['track']` and reading `.id` off it throws on either
+/// case and would crash the whole playlist-loading screen, so both are
+/// filtered out here instead of surfacing to [SpotifyApiTrack.fromJson].
+SpotifyPage<SpotifyApiTrack> parsePlaylistTracksPage(
+  Map<String, dynamic> json,
+) {
+  final items = <SpotifyApiTrack>[];
+  for (final raw in (json['items'] as List? ?? const [])) {
+    final entry = _asStringMapOrNull(raw);
+    final trackJson = entry == null
+        ? null
+        : _asStringMapOrNull(entry['track']);
+    if (trackJson == null || trackJson['id'] == null) continue;
+    items.add(SpotifyApiTrack.fromJson(trackJson));
+  }
   return SpotifyPage(items: items, nextUrl: json['next'] as String?);
 }
 

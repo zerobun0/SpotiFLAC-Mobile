@@ -36,7 +36,7 @@ void main() {
             'name': 'Empty Art',
             'owner': {'display_name': 'Bob'},
             'tracks': {'total': 0},
-            'images': [],
+            'images': <Map<String, String>>[],
           },
         ],
         'next': null,
@@ -85,8 +85,8 @@ void main() {
               'artists': [
                 {'name': 'Someone'},
               ],
-              'album': {'name': 'An Album', 'images': []},
-              'external_ids': {},
+              'album': {'name': 'An Album', 'images': <Map<String, String>>[]},
+              'external_ids': <String, String>{},
               'duration_ms': 180000,
             },
           },
@@ -96,6 +96,55 @@ void main() {
       expect(page.items, hasLength(1));
       expect(page.items.first.addedAt, '2026-01-01T00:00:00Z');
       expect(page.items.first.track.name, 'Liked Song');
+    });
+  });
+
+  group('parsePlaylistTracksPage', () {
+    test('parses a normal item and skips removed/local tracks', () {
+      final page = parsePlaylistTracksPage({
+        'items': [
+          {
+            'track': {
+              'id': 'tr1',
+              'name': 'Real Song',
+              'artists': [
+                {'name': 'Artist A'},
+              ],
+              'album': {
+                'name': 'Album',
+                'images': <Map<String, String>>[],
+              },
+              'external_ids': <String, String>{},
+              'duration_ms': 200000,
+            },
+          },
+          // A track removed from Spotify's catalog: "track" itself is null.
+          {'track': null},
+          // A local (non-Spotify) file added to the playlist: "track" is
+          // present but its id is null.
+          {
+            'track': {
+              'id': null,
+              'name': 'Local File.mp3',
+              'artists': <Map<String, dynamic>>[],
+              'album': {'name': '', 'images': <Map<String, String>>[]},
+              'external_ids': <String, String>{},
+              'duration_ms': 0,
+            },
+          },
+        ],
+        'next': null,
+      });
+
+      expect(page.items, hasLength(1));
+      expect(page.items.first.id, 'tr1');
+      expect(page.items.first.name, 'Real Song');
+      expect(page.nextUrl, isNull);
+    });
+
+    test('handles an empty items list', () {
+      final page = parsePlaylistTracksPage({'items': <dynamic>[], 'next': null});
+      expect(page.items, isEmpty);
     });
   });
 }

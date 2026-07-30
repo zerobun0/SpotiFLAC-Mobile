@@ -62,14 +62,6 @@ class SpotifyLibraryService {
     final url =
         pageUrl ??
         'https://api.spotify.com/v1/playlists/$playlistId/tracks?limit=100';
-    final json = await _get(url);
-    final items = (json['items'] as List? ?? const [])
-        .map(
-          (raw) => SpotifyApiTrack.fromJson(
-            (raw as Map<String, dynamic>)['track'] as Map<String, dynamic>,
-          ),
-        )
-        .toList();
-    return SpotifyPage(items: items, nextUrl: json['next'] as String?);
+    return parsePlaylistTracksPage(await _get(url));
   }
 }

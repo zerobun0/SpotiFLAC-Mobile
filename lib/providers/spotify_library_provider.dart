@@ -1,8 +1,12 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:spotiflac_android/models/spotify_library_models.dart';
 import 'package:spotiflac_android/providers/spotify_auth_provider.dart';
+import 'package:spotiflac_android/services/spotify_auth_service.dart';
 import 'package:spotiflac_android/services/spotify_library_service.dart';
 import 'package:spotiflac_android/utils/logger.dart';
+
+const _spotifySessionExpiredMessage =
+    'Your Spotify session expired — please reconnect.';
 
 final _log = AppLogger('SpotifyLibrary');
 
@@ -70,6 +74,22 @@ class SpotifyLibraryNotifier extends Notifier<SpotifyLibraryState> {
       );
     } catch (e) {
       _log.e('Spotify library sync failed', e);
+      if (e is SpotifyAuthException) {
+        // The refresh token itself was rejected (e.g. the user revoked
+        // access on Spotify's side) — accessToken()/ensureFreshAccessToken()
+        // throws in that case but nothing else ever caught it, so the UI
+        // could claim "Connected to Spotify" indefinitely while every real
+        // API call failed. Revert auth state and clear the stale tokens so
+        // the user is prompted to reconnect instead.
+        await ref
+            .read(spotifyAuthProvider.notifier)
+            .logout(error: _spotifySessionExpiredMessage);
+        state = state.copyWith(
+          isLoading: false,
+          error: _spotifySessionExpiredMessage,
+        );
+        return;
+      }
       state = state.copyWith(isLoading: false, error: '$e');
     }
   }

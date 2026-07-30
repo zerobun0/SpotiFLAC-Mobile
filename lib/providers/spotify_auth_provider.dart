@@ -162,9 +162,16 @@ class SpotifyAuthNotifier extends Notifier<SpotifyAuthState> {
     }
   }
 
-  Future<void> logout() async {
+  /// Clears stored tokens and reverts to [SpotifyAuthStatus.loggedOut].
+  ///
+  /// [error], when set, surfaces why the session ended — e.g. a caller that
+  /// caught a [SpotifyAuthException] from a failed token refresh (the user
+  /// revoked access on Spotify's side) passes a "please reconnect" message
+  /// so the UI doesn't keep claiming "Connected to Spotify" while every
+  /// actual API call is failing.
+  Future<void> logout({String? error}) async {
     await _service.clearStoredTokens();
-    state = const SpotifyAuthState(status: SpotifyAuthStatus.loggedOut);
+    state = SpotifyAuthState(status: SpotifyAuthStatus.loggedOut, error: error);
   }
 
   /// Used by the library/streaming services before every Spotify Web API call.
