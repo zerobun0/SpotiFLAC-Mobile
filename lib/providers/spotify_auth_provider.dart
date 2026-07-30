@@ -1,4 +1,6 @@
 import 'dart:async';
+import 'package:flutter/widgets.dart'
+    show WidgetsBinding, WidgetsBindingObserver, AppLifecycleState;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:spotiflac_android/constants/spotify_config.dart';
@@ -24,6 +26,19 @@ enum SpotifyAuthStatus { unknown, loggedOut, loggingIn, loggedIn }
 bool isSpotifyLoginInFlight(SpotifyAuthStatus status) =>
     status == SpotifyAuthStatus.loggingIn;
 
+/// True when a login has been [isLoginInFlight] for longer than
+/// [graceWindow] since the app resumed from the background. Used by
+/// [SpotifyAuthNotifier] to escape a stuck `loggingIn` state when the user
+/// backs out of the browser without completing login — without this, the
+/// only escape is the 5-minute overall login timeout.
+bool shouldResetStuckLogin({
+  required bool isLoginInFlight,
+  required Duration timeSinceResume,
+  required Duration graceWindow,
+}) {
+  return isLoginInFlight && timeSinceResume >= graceWindow;
+}
+
 class SpotifyAuthState {
   final SpotifyAuthStatus status;
   final String? error;
@@ -45,21 +60,58 @@ class SpotifyAuthState {
   }
 }
 
-class SpotifyAuthNotifier extends Notifier<SpotifyAuthState> {
+class SpotifyAuthNotifier extends Notifier<SpotifyAuthState>
+    with WidgetsBindingObserver {
+  static const _stuckLoginGraceWindow = Duration(seconds: 2);
+
   final SpotifyAuthService _service = SpotifyAuthService();
   StreamSubscription<Map<String, dynamic>>? _callbackSubscription;
   Completer<Map<String, dynamic>>? _pendingLogin;
   String? _pendingState;
   SpotifyPkcePair? _pendingPkce;
+  DateTime? _resumedAt;
 
   @override
   SpotifyAuthState build() {
     _callbackSubscription = PlatformBridge.spotifyLoginCallbackEvents().listen(
       _handleCallback,
     );
-    ref.onDispose(() => _callbackSubscription?.cancel());
+    WidgetsBinding.instance.addObserver(this);
+    ref.onDispose(() {
+      _callbackSubscription?.cancel();
+      WidgetsBinding.instance.removeObserver(this);
+    });
     unawaited(_loadInitialStatus());
     return const SpotifyAuthState();
+  }
+
+  // Deliberately not named `state`: that would shadow the Notifier's own
+  // `state` field for the rest of this method (including the nested
+  // closure below), which relies on unshadowed access to read/assign it.
+  @override
+  // ignore: avoid_renaming_method_parameters
+  void didChangeAppLifecycleState(AppLifecycleState lifecycleState) {
+    if (lifecycleState != AppLifecycleState.resumed) return;
+    _resumedAt = DateTime.now();
+    Future.delayed(_stuckLoginGraceWindow, () {
+      final resumedAt = _resumedAt;
+      if (resumedAt == null) return;
+      final timeSinceResume = DateTime.now().difference(resumedAt);
+      if (shouldResetStuckLogin(
+        isLoginInFlight: isSpotifyLoginInFlight(state.status),
+        timeSinceResume: timeSinceResume,
+        graceWindow: _stuckLoginGraceWindow,
+      )) {
+        _log.w('Spotify login stuck after resume; resetting to loggedOut');
+        _pendingLogin = null;
+        _pendingState = null;
+        _pendingPkce = null;
+        state = state.copyWith(
+          status: SpotifyAuthStatus.loggedOut,
+          error: 'Login was cancelled',
+        );
+      }
+    });
   }
 
   Future<void> _loadInitialStatus() async {
