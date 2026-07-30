@@ -127,6 +127,8 @@ class PlatformBridge {
   static final StreamController<ExtensionSessionGrantEvent>
   _extensionSessionGrantEvents =
       StreamController<ExtensionSessionGrantEvent>.broadcast();
+  static final StreamController<Map<String, dynamic>>
+  _spotifyLoginCallbackEvents = StreamController<Map<String, dynamic>>.broadcast();
   static bool _backendEventHandlerInstalled = false;
 
   static bool get supportsCoreBackend => Platform.isAndroid || Platform.isIOS;
@@ -137,6 +139,11 @@ class PlatformBridge {
   static Stream<ExtensionSessionGrantEvent> extensionSessionGrantEvents() {
     _ensureBackendEventHandler();
     return _extensionSessionGrantEvents.stream;
+  }
+
+  static Stream<Map<String, dynamic>> spotifyLoginCallbackEvents() {
+    _ensureBackendEventHandler();
+    return _spotifyLoginCallbackEvents.stream;
   }
 
   static void _ensureBackendEventHandler() {
@@ -156,6 +163,12 @@ class PlatformBridge {
                 ),
               );
             }
+          }
+          return null;
+        case 'spotifyLoginCallback':
+          final args = call.arguments;
+          if (args is Map) {
+            _spotifyLoginCallbackEvents.add(Map<String, dynamic>.from(args));
           }
           return null;
         default:
