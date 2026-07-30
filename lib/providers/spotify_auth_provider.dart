@@ -11,6 +11,19 @@ final _log = AppLogger('SpotifyAuth');
 
 enum SpotifyAuthStatus { unknown, loggedOut, loggingIn, loggedIn }
 
+/// True when a Spotify login attempt is already in flight for [status].
+///
+/// [SpotifyAuthNotifier.login] uses this to reject re-entrant/concurrent
+/// calls (e.g. a double-tap on "Connect Spotify" before the UI disables the
+/// button). Without this guard, a second call would overwrite the first
+/// call's pending PKCE verifier/OAuth `state`/callback `Completer` while the
+/// first call's `await` is still bound to its own now-orphaned `Completer`;
+/// when that first call's 5-minute timeout eventually fires, it would
+/// unconditionally revert `state` to a "Login timed out" error even if the
+/// second attempt already completed a real, successful login.
+bool isSpotifyLoginInFlight(SpotifyAuthStatus status) =>
+    status == SpotifyAuthStatus.loggingIn;
+
 class SpotifyAuthState {
   final SpotifyAuthStatus status;
   final String? error;
@@ -69,6 +82,8 @@ class SpotifyAuthNotifier extends Notifier<SpotifyAuthState> {
   }
 
   Future<void> login() async {
+    if (isSpotifyLoginInFlight(state.status)) return;
+
     if (SpotifyConfig.clientId.isEmpty) {
       state = state.copyWith(
         status: SpotifyAuthStatus.loggedOut,

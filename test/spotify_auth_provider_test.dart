@@ -28,4 +28,16 @@ void main() {
       expect(cleared.error, isNull);
     });
   });
+
+  group('isSpotifyLoginInFlight', () {
+    test('is true only while a login attempt is in progress', () {
+      expect(isSpotifyLoginInFlight(SpotifyAuthStatus.loggingIn), isTrue);
+    });
+
+    test('is false for every other status, so login() only guards loggingIn', () {
+      expect(isSpotifyLoginInFlight(SpotifyAuthStatus.unknown), isFalse);
+      expect(isSpotifyLoginInFlight(SpotifyAuthStatus.loggedOut), isFalse);
+      expect(isSpotifyLoginInFlight(SpotifyAuthStatus.loggedIn), isFalse);
+    });
+  });
 }
