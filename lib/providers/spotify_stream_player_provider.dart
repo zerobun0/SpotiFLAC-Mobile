@@ -49,14 +49,23 @@ class SpotifyStreamPlayerNotifier extends Notifier<StreamPlaybackState> {
   AudioPlayer? _player;
   final List<StreamSubscription<dynamic>> _subscriptions = [];
   String? _activeTempPath;
+  Future<void> Function()? _previousExclusiveHook;
 
   @override
   StreamPlaybackState build() {
+    // Save/restore instead of overwrite: `musicPlayerExclusiveAudioHook` is a
+    // single global slot also used by `preview_player_provider.dart`. If we
+    // clobbered it unconditionally, whichever provider's build()/dispose()
+    // runs last would silently drop the other's registration, breaking
+    // mutual exclusion between the preview player and this stream player.
+    final previousHook = musicPlayerExclusiveAudioHook;
+    _previousExclusiveHook = previousHook;
     musicPlayerExclusiveAudioHook = () async {
       if (state.status != StreamPlaybackStatus.idle) await stop();
+      await previousHook?.call();
     };
     ref.onDispose(() {
-      musicPlayerExclusiveAudioHook = null;
+      musicPlayerExclusiveAudioHook = _previousExclusiveHook;
       _discardPlayer();
     });
     return const StreamPlaybackState();
@@ -71,12 +80,41 @@ class SpotifyStreamPlayerNotifier extends Notifier<StreamPlaybackState> {
     return streamDir;
   }
 
+  /// Deletes any file in the cache dir whose name starts with the
+  /// deterministic prefix for [trackId], regardless of extension. Used to
+  /// clean up orphaned partial/temp files from failed or in-progress
+  /// downloads, since `_activeTempPath` only ever tracks the single most
+  /// recent *successful* download's path, not the cache dir's real contents.
+  Future<void> _cleanupStaleFilesForTrack(String trackId) async {
+    try {
+      final dir = await _cacheDir();
+      final prefix = streamCacheFileName(trackId);
+      await for (final entity in dir.list()) {
+        if (entity is! File) continue;
+        final segments = entity.uri.pathSegments;
+        final name = segments.isNotEmpty ? segments.last : entity.path;
+        if (name.startsWith(prefix)) {
+          try {
+            await entity.delete();
+          } catch (_) {}
+        }
+      }
+    } catch (_) {}
+  }
+
   Future<void> streamTrack(Track track) async {
     try {
       await musicPlayerHandler?.pause();
     } catch (_) {}
 
+    // Stop the currently-playing AudioPlayer BEFORE unlinking its backing
+    // file — deleting a file an active player still has open and only
+    // relying on the next download's completion to implicitly stop it
+    // (inside _playFile) would let the previous track keep playing from an
+    // already-deleted file in the meantime.
+    await _player?.stop();
     await _cleanupPreviousTempFile();
+    await _cleanupStaleFilesForTrack(track.id);
 
     state = StreamPlaybackState(
       currentTrack: track,
@@ -130,6 +168,13 @@ class SpotifyStreamPlayerNotifier extends Notifier<StreamPlaybackState> {
       await _playFile(filePath);
     } catch (e) {
       _log.e('Stream resolution failed for "${track.name}"', e);
+      // Clean up whatever partial file this failed attempt may have left
+      // behind, regardless of the extension/suffix the backend chose — a
+      // thrown exception here means `_activeTempPath` was never (reliably)
+      // set to the real on-disk path, so a prefix scan is the only way to
+      // find it.
+      _activeTempPath = null;
+      await _cleanupStaleFilesForTrack(track.id);
       state = state.copyWith(
         status: StreamPlaybackStatus.error,
         error: '$e',
