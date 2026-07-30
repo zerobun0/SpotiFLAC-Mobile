@@ -259,15 +259,25 @@ class RepoNotifier extends Notifier<RepoState> {
       await PlatformBridge.initExtensionRepo(cacheDir);
       await PlatformBridge.setRepoRegistryUrl(savedUrl);
       await refresh();
-      await autoSyncExtensions();
+
+      // refresh() swallows its own failures into state.error rather than
+      // throwing, so check it explicitly: if the registry itself failed to
+      // load there's nothing meaningful to auto-sync, and that error must
+      // stay visible rather than being wiped by the success path below.
+      final refreshSucceeded = state.error == null;
+      if (refreshSucceeded) {
+        await autoSyncExtensions();
+      }
 
       // Auto-sync failures for individual extensions are non-fatal to
       // initialization (the registry itself loaded fine), so don't let a
-      // per-extension error linger in state once init has succeeded.
+      // per-extension error linger in state once init has succeeded. Only
+      // clear when refresh() itself succeeded — otherwise any error present
+      // here is the still-relevant refresh() failure, not a stale one.
       state = state.copyWith(
         isInitialized: true,
         isLoading: false,
-        clearError: true,
+        clearError: refreshSucceeded,
       );
       _log.i('Extension store initialized (registryUrl: $savedUrl)');
     } catch (e) {
