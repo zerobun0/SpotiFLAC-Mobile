@@ -7,7 +7,10 @@ import 'package:spotiflac_android/models/track.dart';
 import 'package:spotiflac_android/services/download_request_payload.dart';
 import 'package:spotiflac_android/services/platform_bridge.dart';
 import 'package:spotiflac_android/services/music_player_service.dart'
-    show musicPlayerHandler, musicPlayerExclusiveAudioHook;
+    show
+        musicPlayerHandler,
+        registerExclusiveAudioHook,
+        unregisterExclusiveAudioHook;
 import 'package:spotiflac_android/utils/logger.dart';
 
 final _log = AppLogger('SpotifyStreamPlayer');
@@ -49,23 +52,20 @@ class SpotifyStreamPlayerNotifier extends Notifier<StreamPlaybackState> {
   AudioPlayer? _player;
   final List<StreamSubscription<dynamic>> _subscriptions = [];
   String? _activeTempPath;
-  Future<void> Function()? _previousExclusiveHook;
 
   @override
   StreamPlaybackState build() {
-    // Save/restore instead of overwrite: `musicPlayerExclusiveAudioHook` is a
-    // single global slot also used by `preview_player_provider.dart`. If we
-    // clobbered it unconditionally, whichever provider's build()/dispose()
-    // runs last would silently drop the other's registration, breaking
-    // mutual exclusion between the preview player and this stream player.
-    final previousHook = musicPlayerExclusiveAudioHook;
-    _previousExclusiveHook = previousHook;
-    musicPlayerExclusiveAudioHook = () async {
+    // Registered/unregistered independently of any other owner (e.g. the
+    // main preview player) via the shared multi-subscriber registry in
+    // music_player_service.dart — no single-slot clobbering regardless of
+    // build/dispose order between providers.
+    Future<void> exclusiveHook() async {
       if (state.status != StreamPlaybackStatus.idle) await stop();
-      await previousHook?.call();
-    };
+    }
+
+    registerExclusiveAudioHook(exclusiveHook);
     ref.onDispose(() {
-      musicPlayerExclusiveAudioHook = _previousExclusiveHook;
+      unregisterExclusiveAudioHook(exclusiveHook);
       _discardPlayer();
     });
     return const StreamPlaybackState();
@@ -80,11 +80,19 @@ class SpotifyStreamPlayerNotifier extends Notifier<StreamPlaybackState> {
     return streamDir;
   }
 
-  /// Deletes any file in the cache dir whose name starts with the
-  /// deterministic prefix for [trackId], regardless of extension. Used to
-  /// clean up orphaned partial/temp files from failed or in-progress
-  /// downloads, since `_activeTempPath` only ever tracks the single most
-  /// recent *successful* download's path, not the cache dir's real contents.
+  /// Deletes any file in the cache dir whose name is exactly the
+  /// deterministic prefix for [trackId], or that prefix followed by a `.ext`
+  /// suffix, regardless of the extension the backend chose. Used to clean up
+  /// orphaned partial/temp files from failed or in-progress downloads, since
+  /// `_activeTempPath` only ever tracks the single most recent *successful*
+  /// download's path, not the cache dir's real contents.
+  ///
+  /// Deliberately NOT an unguarded `name.startsWith(prefix)`: two different
+  /// track ids can sanitize to strings where one is a literal prefix of the
+  /// other (e.g. ids "123" and "1234" from a source with variable-length
+  /// numeric ids), which would let this delete a *different* track's cache
+  /// file. Requiring an exact match, or a match immediately followed by a
+  /// `.` extension separator, rules that out.
   Future<void> _cleanupStaleFilesForTrack(String trackId) async {
     try {
       final dir = await _cacheDir();
@@ -93,7 +101,7 @@ class SpotifyStreamPlayerNotifier extends Notifier<StreamPlaybackState> {
         if (entity is! File) continue;
         final segments = entity.uri.pathSegments;
         final name = segments.isNotEmpty ? segments.last : entity.path;
-        if (name.startsWith(prefix)) {
+        if (name == prefix || name.startsWith('$prefix.')) {
           try {
             await entity.delete();
           } catch (_) {}

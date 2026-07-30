@@ -60,11 +60,17 @@ class PreviewPlayerController extends Notifier<PreviewPlayerState> {
     _lifecycleListener = AppLifecycleListener(
       onStateChange: _handleAppLifecycleState,
     );
-    musicPlayerExclusiveAudioHook = () async {
+    // Registered/unregistered independently of any other owner (e.g. the
+    // Spotify stream player) via the shared multi-subscriber registry in
+    // music_player_service.dart — no single-slot clobbering regardless of
+    // build/dispose order between providers.
+    Future<void> exclusiveHook() async {
       if (state.isActive) await stop();
-    };
+    }
+
+    registerExclusiveAudioHook(exclusiveHook);
     ref.onDispose(() {
-      musicPlayerExclusiveAudioHook = null;
+      unregisterExclusiveAudioHook(exclusiveHook);
       _disposePlayer();
     });
     return const PreviewPlayerState();

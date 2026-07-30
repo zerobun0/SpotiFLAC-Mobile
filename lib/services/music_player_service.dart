@@ -574,9 +574,14 @@ class MusicPlayerHandler extends BaseAudioHandler
       return;
     }
 
-    try {
-      await musicPlayerExclusiveAudioHook?.call();
-    } catch (_) {}
+    // Snapshot to a list first: a hook's stop() can synchronously trigger
+    // another registration/unregistration (e.g. disposing a provider),
+    // which would otherwise mutate the set while it's being iterated.
+    for (final hook in _exclusiveAudioHooks.toList()) {
+      try {
+        await hook();
+      } catch (_) {}
+    }
     if (!_isCurrentPlayRequest(generation, media)) return;
 
     _switchingGeneration = generation;
@@ -893,7 +898,24 @@ final StreamController<MusicPlayerHandler> _handlerReadyController =
 
 MusicPlayerHandler? get musicPlayerHandler => _handler;
 
-Future<void> Function()? musicPlayerExclusiveAudioHook;
+/// Independent registry of "stop your audio, another exclusive player is
+/// about to take over" callbacks. Any number of owners (the main music
+/// player, the preview player, the Spotify stream player, ...) can register
+/// and unregister their own hook independently of each other's build/dispose
+/// order — this deliberately replaces an earlier single-slot
+/// `Future<void> Function()?` variable, which could only ever hold one
+/// owner's hook at a time and got silently clobbered whenever a second
+/// owner registered, regardless of which owner disposed first.
+final Set<Future<void> Function()> _exclusiveAudioHooks =
+    <Future<void> Function()>{};
+
+void registerExclusiveAudioHook(Future<void> Function() hook) {
+  _exclusiveAudioHooks.add(hook);
+}
+
+void unregisterExclusiveAudioHook(Future<void> Function() hook) {
+  _exclusiveAudioHooks.remove(hook);
+}
 
 Future<MusicPlayerHandler> initMusicPlayer() async {
   if (_handler != null) return _handler!;
