@@ -89,3 +89,6 @@ CLAUDE.md
 
 # FVM Version Cache
 .fvm/
+
+# Subagent-driven-development scratch workspace (briefs, reports, ledgers)
+.superpowers/
