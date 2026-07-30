@@ -70,6 +70,7 @@ class MainActivity: FlutterFragmentActivity() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
     private var backendChannel: MethodChannel? = null
     private val pendingSessionGrantEvents = mutableListOf<Map<String, Any>>()
+    private val pendingSpotifyLoginCallbackEvents = mutableListOf<Map<String, Any?>>()
     private var pendingSafTreeResult: MethodChannel.Result? = null
     private val safScanLock = Any()
     private var safScanProgress = SafScanProgress()
@@ -2068,6 +2069,15 @@ class MainActivity: FlutterFragmentActivity() {
             return
         }
         val host = (uri.host ?: "").lowercase(Locale.US)
+
+        if (host == "spotify-login-callback") {
+            val code = uri.getQueryParameter("code")
+            val state = uri.getQueryParameter("state")
+            val error = uri.getQueryParameter("error")
+            notifySpotifyLoginCallback(mapOf("code" to code, "state" to state, "error" to error))
+            return
+        }
+
         val path = (uri.path ?: "").lowercase(Locale.US)
         val isSessionGrant = host == "session-grant"
         val isCallback =
@@ -2153,6 +2163,23 @@ class MainActivity: FlutterFragmentActivity() {
         channel.invokeMethod("extensionSessionGrantCompleted", payload)
     }
 
+    // Deliver the Spotify login-flow OAuth redirect (code/state/error) to Dart.
+    // Unlike the extension-runtime OAuth paths above, this never touches the
+    // Activity's `flutterEngine` property directly: on a cold start that
+    // getter can throw (not just return null) before the FlutterFragment has
+    // attached its delegate, which would crash `onCreate`. Routing through
+    // `backendChannel` (only assigned once `configureFlutterEngine` actually
+    // runs) and a pending-events queue mirrors the existing session-grant
+    // pattern and avoids that crash.
+    private fun notifySpotifyLoginCallback(payload: Map<String, Any?>) {
+        val channel = backendChannel
+        if (channel == null) {
+            pendingSpotifyLoginCallbackEvents.add(payload)
+            return
+        }
+        channel.invokeMethod("spotifyLoginCallback", payload)
+    }
+
     override fun onDestroy() {
         try {
             Gobackend.cleanupExtensions()
@@ -2224,6 +2251,13 @@ class MainActivity: FlutterFragmentActivity() {
             pendingSessionGrantEvents.clear()
             for (event in events) {
                 channel.invokeMethod("extensionSessionGrantCompleted", event)
+            }
+        }
+        if (pendingSpotifyLoginCallbackEvents.isNotEmpty()) {
+            val events = pendingSpotifyLoginCallbackEvents.toList()
+            pendingSpotifyLoginCallbackEvents.clear()
+            for (event in events) {
+                channel.invokeMethod("spotifyLoginCallback", event)
             }
         }
 
