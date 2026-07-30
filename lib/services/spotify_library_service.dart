@@ -21,15 +21,29 @@ class SpotifyLibraryService {
        _httpClient = httpClient ?? http.Client();
 
   Future<Map<String, dynamic>> _get(String url) async {
-    final token = await _getAccessToken();
-    final response = await _httpClient.get(
-      Uri.parse(url),
-      headers: {'Authorization': 'Bearer $token'},
-    );
+    var response = await _getOnce(url);
+    if (response.statusCode == 429) {
+      final delaySeconds = _parseRetryAfterSeconds(response.headers['retry-after']);
+      await Future<void>.delayed(Duration(seconds: delaySeconds));
+      response = await _getOnce(url);
+    }
     if (response.statusCode != 200) {
       throw SpotifyApiException(response.statusCode, response.body);
     }
     return jsonDecode(response.body) as Map<String, dynamic>;
+  }
+
+  Future<http.Response> _getOnce(String url) async {
+    final token = await _getAccessToken();
+    return _httpClient.get(
+      Uri.parse(url),
+      headers: {'Authorization': 'Bearer $token'},
+    );
+  }
+
+  static int _parseRetryAfterSeconds(String? header) {
+    if (header == null) return 1;
+    return int.tryParse(header.trim()) ?? 1;
   }
 
   Future<SpotifyPage<SpotifyPlaylistSummary>> getPlaylists({
