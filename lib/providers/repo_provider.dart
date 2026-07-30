@@ -234,14 +234,28 @@ class RepoNotifier extends Notifier<RepoState> {
     return completer.future;
   }
 
+  /// Guards against overlapping callers (e.g. `MainShell`'s startup call
+  /// racing a Store tab visit, or a resume re-check firing mid-init): a
+  /// second call while one is already running awaits the same in-progress
+  /// operation instead of starting a duplicate registry fetch/auto-sync.
+  Future<void>? _initializeFuture;
+
   @override
   RepoState build() {
     return const RepoState();
   }
 
-  Future<void> initialize(String cacheDir) async {
-    if (state.isInitialized) return;
+  Future<void> initialize(String cacheDir) {
+    if (state.isInitialized) return Future<void>.value();
+    final existingFuture = _initializeFuture;
+    if (existingFuture != null) return existingFuture;
 
+    final future = _doInitialize(cacheDir);
+    _initializeFuture = future;
+    return future;
+  }
+
+  Future<void> _doInitialize(String cacheDir) async {
     final prefs = await SharedPreferences.getInstance();
     var savedUrl = prefs.getString(_registryUrlPrefKey) ?? '';
     if (savedUrl.isEmpty) {
@@ -283,6 +297,12 @@ class RepoNotifier extends Notifier<RepoState> {
     } catch (e) {
       _log.e('Failed to initialize store: $e');
       state = state.copyWith(isLoading: false, error: e.toString());
+    } finally {
+      // Clears whether init succeeded or failed: on success the
+      // `isInitialized` fast path in `initialize()` takes over for future
+      // calls; on failure this lets a later retry start a fresh attempt
+      // instead of being stuck awaiting a stale failed future forever.
+      _initializeFuture = null;
     }
   }
 
