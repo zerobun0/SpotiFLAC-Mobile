@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:spotiflac_android/models/spotify_library_models.dart';
 import 'package:spotiflac_android/providers/spotify_auth_provider.dart';
@@ -9,6 +11,29 @@ const _spotifySessionExpiredMessage =
     'Your Spotify session expired — please reconnect.';
 
 final _log = AppLogger('SpotifyLibrary');
+
+class LikedTracksAccumulation {
+  final List<SpotifyLikedTrack> items;
+  final Set<String> seenUrls;
+
+  const LikedTracksAccumulation({required this.items, required this.seenUrls});
+}
+
+/// Pure reducer for incrementally accumulating liked-tracks pages. Returns
+/// null when [page.nextUrl] repeats a URL already in [acc.seenUrls] — signals
+/// the caller to stop, guarding against a malfunctioning/looping API response
+/// that would otherwise keep this fetch running forever.
+LikedTracksAccumulation? appendLikedTracksPage(
+  LikedTracksAccumulation acc,
+  SpotifyPage<SpotifyLikedTrack> page,
+) {
+  final nextUrl = page.nextUrl;
+  if (nextUrl != null && acc.seenUrls.contains(nextUrl)) return null;
+  return LikedTracksAccumulation(
+    items: [...acc.items, ...page.items],
+    seenUrls: nextUrl != null ? {...acc.seenUrls, nextUrl} : acc.seenUrls,
+  );
+}
 
 class SpotifyLibraryState {
   final List<SpotifyPlaylistSummary> playlists;
@@ -60,27 +85,30 @@ class SpotifyLibraryNotifier extends Notifier<SpotifyLibraryState> {
       final playlists = await _collectAllPages(
         (pageUrl) => _service.getPlaylists(pageUrl: pageUrl),
       );
-      final liked = await _collectAllPages(
-        (pageUrl) => _service.getLikedTracks(pageUrl: pageUrl),
-      );
       final followed = await _collectAllPages(
         (pageUrl) => _service.getFollowedArtists(pageUrl: pageUrl),
       );
+
+      // Liked tracks: yield the first page immediately so the Library tab is
+      // interactive right away, then keep fetching subsequent pages in the
+      // background instead of blocking syncAll() on the full paginated list —
+      // this list is the one most likely to run into the hundreds of items.
+      final firstPage = await _service.getLikedTracks();
       state = state.copyWith(
         playlists: playlists,
-        likedTracks: liked,
         followedArtists: followed,
+        likedTracks: firstPage.items,
         isLoading: false,
+      );
+      unawaited(
+        _syncRemainingLikedTracks(
+          LikedTracksAccumulation(items: firstPage.items, seenUrls: {}),
+          firstPage.nextUrl,
+        ),
       );
     } catch (e) {
       _log.e('Spotify library sync failed', e);
       if (e is SpotifyAuthException) {
-        // The refresh token itself was rejected (e.g. the user revoked
-        // access on Spotify's side) — accessToken()/ensureFreshAccessToken()
-        // throws in that case but nothing else ever caught it, so the UI
-        // could claim "Connected to Spotify" indefinitely while every real
-        // API call failed. Revert auth state and clear the stale tokens so
-        // the user is prompted to reconnect instead.
         await ref
             .read(spotifyAuthProvider.notifier)
             .logout(error: _spotifySessionExpiredMessage);
@@ -91,6 +119,30 @@ class SpotifyLibraryNotifier extends Notifier<SpotifyLibraryState> {
         return;
       }
       state = state.copyWith(isLoading: false, error: '$e');
+    }
+  }
+
+  Future<void> _syncRemainingLikedTracks(
+    LikedTracksAccumulation acc,
+    String? nextUrl,
+  ) async {
+    var current = acc;
+    var url = nextUrl;
+    while (url != null) {
+      try {
+        final page = await _service.getLikedTracks(pageUrl: url);
+        final next = appendLikedTracksPage(current, page);
+        if (next == null) {
+          _log.w('Spotify liked-tracks pagination returned a repeated nextUrl; stopping');
+          return;
+        }
+        current = next;
+        state = state.copyWith(likedTracks: current.items);
+        url = page.nextUrl;
+      } catch (e) {
+        _log.w('Background liked-tracks page fetch failed: $e');
+        return;
+      }
     }
   }
 
