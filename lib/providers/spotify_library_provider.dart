@@ -142,6 +142,12 @@ class SpotifyLibraryNotifier extends Notifier<SpotifyLibraryState> {
       }
       try {
         final page = await _service.getLikedTracks(pageUrl: url);
+        // Re-check generation after await: an in-flight fetch can resolve after
+        // a newer syncAll() has started, and we must not clobber its fresh state.
+        if (generation != _syncGeneration) {
+          _log.d('Background liked-tracks pagination abandoned for newer sync');
+          return;
+        }
         final next = appendLikedTracksPage(current, page);
         if (next == null) {
           _log.w('Spotify liked-tracks pagination returned a repeated nextUrl; stopping');
