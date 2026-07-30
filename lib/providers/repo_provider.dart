@@ -1,5 +1,6 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'dart:async';
+import 'package:path_provider/path_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:spotiflac_android/constants/app_info.dart';
 import 'package:spotiflac_android/services/platform_bridge.dart';
@@ -24,6 +25,15 @@ int compareVersions(String v1, String v2) {
     if (n1 > n2) return 1;
   }
   return 0;
+}
+
+/// Extensions that [RepoNotifier.autoSyncExtensions] should install or
+/// update: anything not yet installed, plus anything installed whose
+/// registry version is ahead of what's on-device.
+List<RepoExtension> extensionsNeedingSync(List<RepoExtension> extensions) {
+  return extensions
+      .where((e) => !e.isInstalled || e.hasUpdate)
+      .toList(growable: false);
 }
 
 class RepoCategory {
@@ -206,6 +216,9 @@ class RepoState {
 }
 
 class RepoNotifier extends Notifier<RepoState> {
+  static const _defaultRegistryUrl =
+      'https://raw.githubusercontent.com/zarzet/SpotiFLAC-Extension/main/registry.json';
+
   /// Serializes install/upgrade so two never race the native VM teardown/reload.
   Future<void> _mutationChain = Future<void>.value();
 
@@ -230,7 +243,11 @@ class RepoNotifier extends Notifier<RepoState> {
     if (state.isInitialized) return;
 
     final prefs = await SharedPreferences.getInstance();
-    final savedUrl = prefs.getString(_registryUrlPrefKey) ?? '';
+    var savedUrl = prefs.getString(_registryUrlPrefKey) ?? '';
+    if (savedUrl.isEmpty) {
+      savedUrl = _defaultRegistryUrl;
+      await prefs.setString(_registryUrlPrefKey, savedUrl);
+    }
 
     state = state.copyWith(
       isLoading: true,
@@ -240,19 +257,36 @@ class RepoNotifier extends Notifier<RepoState> {
 
     try {
       await PlatformBridge.initExtensionRepo(cacheDir);
-
-      if (savedUrl.isNotEmpty) {
-        await PlatformBridge.setRepoRegistryUrl(savedUrl);
-        await refresh();
-      }
+      await PlatformBridge.setRepoRegistryUrl(savedUrl);
+      await refresh();
+      await autoSyncExtensions();
 
       state = state.copyWith(isInitialized: true, isLoading: false);
-      _log.i(
-        'Extension store initialized (registryUrl: ${savedUrl.isEmpty ? "not set" : savedUrl})',
-      );
+      _log.i('Extension store initialized (registryUrl: $savedUrl)');
     } catch (e) {
       _log.e('Failed to initialize store: $e');
       state = state.copyWith(isLoading: false, error: e.toString());
+    }
+  }
+
+  /// Installs every not-yet-installed registry extension and upgrades every
+  /// installed one with an available update, using the exact same
+  /// install/upgrade calls the Store tab's manual buttons already make. Safe
+  /// to call repeatedly — extensions already up to date are skipped.
+  Future<void> autoSyncExtensions() async {
+    final targets = extensionsNeedingSync(state.extensions);
+    if (targets.isEmpty) return;
+
+    final tempDir = await getTemporaryDirectory();
+    final appDir = await getApplicationDocumentsDirectory();
+    final extensionsDir = '${appDir.path}/extensions';
+
+    for (final ext in targets) {
+      if (!ext.isInstalled) {
+        await installExtension(ext.id, tempDir.path, extensionsDir);
+      } else {
+        await updateExtension(ext.id, tempDir.path);
+      }
     }
   }
 
