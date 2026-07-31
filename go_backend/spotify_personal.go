@@ -121,6 +121,9 @@ func bootstrapSpotifyPersonalSession(ctx context.Context, client *http.Client, s
 			}
 		}
 	}
+	if session.clientVersion == "" {
+		return nil, fmt.Errorf("failed to read clientVersion from open.spotify.com response")
+	}
 
 	// Step 2: GET the access-token endpoint with the same cookies attached —
 	// with a real sp_dc cookie present, this returns a real user's access
@@ -383,6 +386,10 @@ func formatSpotifyHomeFeedItem(rawItem any) (map[string]any, bool) {
 		coverURL, _ = getNestedSpotifyValue(contentData, "albumOfTrack.coverArt.sources.0.url").(string)
 		if d, ok := getNestedSpotifyValue(contentData, "duration.totalMilliseconds").(float64); ok {
 			durationMs = d
+		} else if d, ok := getNestedSpotifyValue(contentData, "trackDuration.totalMilliseconds").(float64); ok {
+			// Reference index.js:1892-1893 falls back to trackDuration when
+			// duration is absent — some track shapes use the other field name.
+			durationMs = d
 		}
 		if albumURI, ok := getNestedSpotifyValue(contentData, "albumOfTrack.uri").(string); ok {
 			albumParts := strings.Split(albumURI, ":")
@@ -391,10 +398,42 @@ func formatSpotifyHomeFeedItem(rawItem any) (map[string]any, bool) {
 			}
 		}
 		albumName, _ = getNestedSpotifyValue(contentData, "albumOfTrack.name").(string)
-		artistNames = joinSpotifyArtistNames(getNestedSpotifyValue(contentData, "artists.items"))
+		artistItems, _ := getNestedSpotifyValue(contentData, "artists.items").([]any)
+		if len(artistItems) == 0 {
+			// Reference index.js:1903-1912 falls back to firstArtist/otherArtists
+			// when artists.items is empty — some track shapes represent artists
+			// this way instead.
+			if firstArtist, ok := getNestedSpotifyValue(contentData, "firstArtist.items.0.profile.name").(string); ok && firstArtist != "" {
+				artistNames = firstArtist
+				if otherArtists, ok := getNestedSpotifyValue(contentData, "otherArtists.items").([]any); ok {
+					for _, rawOther := range otherArtists {
+						otherMap, ok := rawOther.(map[string]any)
+						if !ok {
+							continue
+						}
+						if oName, ok := getNestedSpotifyValue(otherMap, "profile.name").(string); ok && oName != "" {
+							artistNames += ", " + oName
+						}
+					}
+				}
+			}
+		} else {
+			artistNames = joinSpotifyArtistNames(artistItems)
+		}
 	case "album":
 		coverURL, _ = getNestedSpotifyValue(contentData, "coverArt.sources.0.url").(string)
-		artistNames = joinSpotifyArtistNames(getNestedSpotifyValue(contentData, "artists.items"))
+		artistItems, _ := getNestedSpotifyValue(contentData, "artists.items").([]any)
+		if len(artistItems) == 0 {
+			// Reference index.js:1921-1925 falls back to artists.0.name, then
+			// artist.name, when artists.items is empty.
+			artistName, ok := getNestedSpotifyValue(contentData, "artists.0.name").(string)
+			if !ok || artistName == "" {
+				artistName, _ = getNestedSpotifyValue(contentData, "artist.name").(string)
+			}
+			artistNames = artistName
+		} else {
+			artistNames = joinSpotifyAlbumArtistNames(artistItems)
+		}
 	case "playlist":
 		coverURL, _ = getNestedSpotifyValue(contentData, "images.items.0.sources.0.url").(string)
 		description, _ = contentData["description"].(string)
@@ -404,7 +443,12 @@ func formatSpotifyHomeFeedItem(rawItem any) (map[string]any, bool) {
 	case "station":
 		coverURL, _ = getNestedSpotifyValue(contentData, "image.sources.0.url").(string)
 	default:
-		return nil, false
+		// Reference index.js:1890-1939 has no else branch for unhandled types —
+		// items of any other type (e.g. episode, show, audiobook) still get
+		// emitted with id/uri/type/name populated and cover/artists/etc. left
+		// at their zero values, rather than being dropped. Dropping them here
+		// would silently empty out — and hide — whole sections like "Your
+		// shows" via the len(items) == 0 guard in the caller.
 	}
 
 	return map[string]any{
@@ -434,6 +478,32 @@ func joinSpotifyArtistNames(rawItems any) string {
 			continue
 		}
 		if name, ok := getNestedSpotifyValue(itemMap, "profile.name").(string); ok && name != "" {
+			names = append(names, name)
+		}
+	}
+	return strings.Join(names, ", ")
+}
+
+// joinSpotifyAlbumArtistNames mirrors the reference's album artist-items
+// mapping (index.js:1928-1930), which additionally falls back to a direct
+// "name" property when "profile.name" is absent — unlike the track path,
+// which only ever reads "profile.name".
+func joinSpotifyAlbumArtistNames(rawItems any) string {
+	items, ok := rawItems.([]any)
+	if !ok {
+		return ""
+	}
+	names := make([]string, 0, len(items))
+	for _, rawItem := range items {
+		itemMap, ok := rawItem.(map[string]any)
+		if !ok {
+			continue
+		}
+		name, ok := getNestedSpotifyValue(itemMap, "profile.name").(string)
+		if !ok || name == "" {
+			name, _ = itemMap["name"].(string)
+		}
+		if name != "" {
 			names = append(names, name)
 		}
 	}
