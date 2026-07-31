@@ -24,6 +24,7 @@ import 'package:spotiflac_android/providers/settings_provider.dart';
 import 'package:spotiflac_android/providers/local_library_provider.dart';
 import 'package:spotiflac_android/providers/playback_provider.dart';
 import 'package:spotiflac_android/providers/music_player_provider.dart';
+import 'package:spotiflac_android/providers/spotify_auth_provider.dart';
 import 'package:spotiflac_android/services/music_player_service.dart';
 import 'package:spotiflac_android/services/library_database.dart';
 import 'package:spotiflac_android/services/local_track_redownload_service.dart';
@@ -39,6 +40,8 @@ import 'package:cached_network_image/cached_network_image.dart';
 import 'package:spotiflac_android/services/cover_cache_manager.dart';
 import 'package:spotiflac_android/screens/library_tracks_folder_screen.dart';
 import 'package:spotiflac_android/screens/local_album_screen.dart';
+import 'package:spotiflac_android/screens/spotify/spotify_library_screen.dart';
+import 'package:spotiflac_android/screens/spotify/spotify_login_screen.dart';
 import 'package:spotiflac_android/utils/clickable_metadata.dart';
 import 'package:spotiflac_android/utils/string_utils.dart';
 import 'package:spotiflac_android/widgets/download_service_picker.dart';
@@ -1458,6 +1461,8 @@ class _QueueTabState extends ConsumerState<QueueTab> {
                       ),
                     ),
                   ),
+
+                _buildSpotifyLibraryEntrySliver(context, colorScheme),
               ],
               body: PageView.builder(
                 controller: _filterPageController!,
@@ -1488,6 +1493,45 @@ class _QueueTabState extends ConsumerState<QueueTab> {
           ), // ScrollConfiguration
         ],
       ),
+    );
+  }
+
+  /// Persistent Library-tab entry point into the Spotify login/library
+  /// screens (relocated here from Settings). Branches on
+  /// [spotifyAuthProvider] so it reads "Connect Spotify" when logged out and
+  /// "Your Spotify" once the user has authenticated.
+  Widget _buildSpotifyLibraryEntrySliver(
+    BuildContext context,
+    ColorScheme colorScheme,
+  ) {
+    return Consumer(
+      builder: (context, ref, child) {
+        final isLoggedIn = ref.watch(
+          spotifyAuthProvider.select(
+            (state) => state.status == SpotifyAuthStatus.loggedIn,
+          ),
+        );
+        return SliverToBoxAdapter(
+          child: _buildCollectionListItem(
+            context: context,
+            colorScheme: colorScheme,
+            icon: Icons.podcasts,
+            iconColor: Colors.white,
+            iconBgColor: const Color(0xFF1DB954),
+            title: isLoggedIn ? 'Your Spotify' : 'Connect Spotify',
+            subtitle: isLoggedIn
+                ? 'Browse your Spotify playlists and liked songs'
+                : 'Connect your Spotify account to stream your library',
+            onTap: () => _navigateWithUnfocus(
+              slidePageRoute<void>(
+                page: isLoggedIn
+                    ? const SpotifyLibraryScreen()
+                    : const SpotifyLoginScreen(),
+              ),
+            ),
+          ),
+        );
+      },
     );
   }
 

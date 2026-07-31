@@ -10,7 +10,6 @@ import 'package:spotiflac_android/screens/settings/metadata_settings_page.dart';
 import 'package:spotiflac_android/screens/settings/extensions_page.dart';
 import 'package:spotiflac_android/screens/settings/library_settings_page.dart';
 import 'package:spotiflac_android/screens/settings/app_settings_page.dart';
-import 'package:spotiflac_android/screens/spotify/spotify_login_screen.dart';
 import 'package:spotiflac_android/screens/settings/about_page.dart';
 import 'package:spotiflac_android/screens/settings/cache_management_page.dart';
 import 'package:spotiflac_android/screens/settings/backup_restore_page.dart';
@@ -79,13 +78,6 @@ class SettingsTab extends ConsumerWidget {
                   4,
                 ),
                 children: [
-                  SettingsItem(
-                    icon: Icons.podcasts,
-                    title: 'Spotify Account',
-                    subtitle: 'Connect your Spotify account to stream your library',
-                    onTap: () =>
-                        _navigateTo(context, const SpotifyLoginScreen()),
-                  ),
                   SettingsItem(
                     icon: Icons.palette_outlined,
                     title: l10n.settingsAppearance,
