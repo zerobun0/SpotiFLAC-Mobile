@@ -495,6 +495,11 @@ class ExploreNotifier extends Notifier<ExploreState> {
       return;
     }
 
+    if (state.isLoading && !forceRefresh) {
+      _log.d('Personalized Spotify home feed fetch already in progress');
+      return;
+    }
+
     final requestId = ++_homeFeedRequestId;
     state = state.copyWith(isLoading: !state.hasContent, error: null);
 
