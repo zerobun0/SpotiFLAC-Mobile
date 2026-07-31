@@ -2,6 +2,7 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:file_picker/file_picker.dart';
+import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:spotiflac_android/l10n/l10n.dart';
 import 'package:spotiflac_android/models/settings.dart';
@@ -12,6 +13,7 @@ import 'package:spotiflac_android/screens/settings/download_fallback_extensions_
 import 'package:spotiflac_android/screens/settings/extension_detail_page.dart';
 import 'package:spotiflac_android/screens/settings/metadata_provider_priority_page.dart';
 import 'package:spotiflac_android/screens/settings/provider_priority_page.dart';
+import 'package:spotiflac_android/screens/spotify/spotify_web_login_screen.dart';
 import 'package:spotiflac_android/widgets/settings_group.dart';
 import 'package:spotiflac_android/widgets/settings_sliver_app_bar.dart';
 
@@ -850,6 +852,9 @@ class _HomeFeedProviderSelector extends ConsumerWidget {
     String currentProviderName = context.l10n.extensionsHomeFeedAuto;
     if (homeFeedDisabled) {
       currentProviderName = context.l10n.extensionsHomeFeedOff;
+    } else if (settings.homeFeedProvider ==
+        AppSettings.homeFeedProviderSpotifyPersonal) {
+      currentProviderName = 'Your Spotify (personalized)';
     } else if (settings.homeFeedProvider != null &&
         settings.homeFeedProvider!.isNotEmpty) {
       final ext = homeFeedProviders
@@ -974,6 +979,41 @@ class _HomeFeedProviderSelector extends ConsumerWidget {
                       .setHomeFeedProvider(AppSettings.homeFeedProviderOff);
                   ref.read(exploreProvider.notifier).clear();
                   Navigator.pop(ctx);
+                },
+              ),
+              ListTile(
+                leading: Icon(Icons.podcasts, color: colorScheme.secondary),
+                title: const Text('Your Spotify (personalized)'),
+                subtitle: const Text('Your real Spotify home feed'),
+                trailing:
+                    settings.homeFeedProvider ==
+                        AppSettings.homeFeedProviderSpotifyPersonal
+                    ? Icon(Icons.check_circle, color: colorScheme.primary)
+                    : Icon(Icons.circle_outlined, color: colorScheme.outline),
+                onTap: () async {
+                  final cookie = await const FlutterSecureStorage().read(
+                    key: spotifySessionCookieStorageKey,
+                  );
+                  final hasCookie = cookie != null && cookie.isNotEmpty;
+                  if (!ctx.mounted) return;
+                  Navigator.pop(ctx);
+
+                  if (!hasCookie) {
+                    final loggedIn = await Navigator.push<bool>(
+                      context,
+                      MaterialPageRoute<bool>(
+                        builder: (_) => const SpotifyWebLoginScreen(),
+                      ),
+                    );
+                    if (loggedIn != true) return;
+                  }
+
+                  ref
+                      .read(settingsProvider.notifier)
+                      .setHomeFeedProvider(
+                        AppSettings.homeFeedProviderSpotifyPersonal,
+                      );
+                  ref.read(exploreProvider.notifier).refresh();
                 },
               ),
               if (homeFeedProviders.isEmpty)

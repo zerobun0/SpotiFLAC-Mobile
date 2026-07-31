@@ -6,6 +6,7 @@ part 'settings.g.dart';
 @JsonSerializable()
 class AppSettings {
   static const String homeFeedProviderOff = '__off__';
+  static const String homeFeedProviderSpotifyPersonal = '__spotify_personal__';
 
   final String defaultService;
   final String audioQuality;

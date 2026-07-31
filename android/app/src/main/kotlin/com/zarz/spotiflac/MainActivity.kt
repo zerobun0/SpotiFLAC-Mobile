@@ -3671,6 +3671,13 @@ class MainActivity: FlutterFragmentActivity() {
                             }
                             result.success(response)
                         }
+                        "getSpotifyPersonalHomeFeed" -> {
+                            val sessionCookie = call.argument<String>("session_cookie") ?: ""
+                            val response = withContext(Dispatchers.IO) {
+                                Gobackend.getSpotifyPersonalHomeFeed(sessionCookie)
+                            }
+                            result.success(response)
+                        }
                         "getExtensionBrowseCategories" -> {
                             val extensionId = call.argument<String>("extension_id") ?: ""
                             val response = withContext(Dispatchers.IO) {

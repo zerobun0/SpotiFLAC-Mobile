@@ -1,8 +1,11 @@
 import 'dart:convert';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:spotiflac_android/models/settings.dart';
+import 'package:spotiflac_android/screens/spotify/spotify_web_login_screen.dart'
+    show spotifySessionCookieStorageKey;
 import 'package:spotiflac_android/services/platform_bridge.dart';
 import 'package:spotiflac_android/utils/logger.dart';
 import 'package:spotiflac_android/providers/extension_provider.dart';
@@ -375,6 +378,12 @@ class ExploreNotifier extends Notifier<ExploreState> {
       return;
     }
 
+    if (ref.read(settingsProvider).homeFeedProvider ==
+        AppSettings.homeFeedProviderSpotifyPersonal) {
+      await _fetchSpotifyPersonalHomeFeed(forceRefresh: forceRefresh);
+      return;
+    }
+
     if (!forceRefresh &&
         state.hasContent &&
         state.lastFetched != null &&
@@ -473,6 +482,69 @@ class ExploreNotifier extends Notifier<ExploreState> {
       _saveToCache(normalizedSections, targetExt.id);
     } catch (e, stack) {
       _log.e('Error fetching home feed: $e', e, stack);
+      if (requestId != _homeFeedRequestId) return;
+      state = state.copyWith(isLoading: false, error: e.toString());
+    }
+  }
+
+  Future<void> _fetchSpotifyPersonalHomeFeed({bool forceRefresh = false}) async {
+    if (!forceRefresh &&
+        state.hasContent &&
+        state.lastFetched != null &&
+        DateTime.now().difference(state.lastFetched!).inMinutes < 5) {
+      return;
+    }
+
+    final requestId = ++_homeFeedRequestId;
+    state = state.copyWith(isLoading: !state.hasContent, error: null);
+
+    final cookie = await const FlutterSecureStorage().read(
+      key: spotifySessionCookieStorageKey,
+    );
+    if (cookie == null || cookie.isEmpty) {
+      if (requestId != _homeFeedRequestId) return;
+      state = state.copyWith(
+        isLoading: false,
+        error: 'Log in to Spotify to see your personalized feed',
+      );
+      return;
+    }
+
+    try {
+      final result = await PlatformBridge.getSpotifyPersonalHomeFeed(cookie);
+      if (requestId != _homeFeedRequestId) return;
+
+      if (result == null || result['success'] != true) {
+        state = state.copyWith(
+          isLoading: false,
+          error:
+              result?['error'] as String? ??
+              'Failed to fetch personalized home feed',
+        );
+        return;
+      }
+
+      final greeting = result['greeting'] as String?;
+      final sectionsData = result['sections'] as List<dynamic>? ?? [];
+      final normalizedSections = await compute(
+        _normalizeExploreSectionsPayload,
+        sectionsData,
+      );
+      if (requestId != _homeFeedRequestId) return;
+      final sections = _buildExploreSectionsFromNormalizedPayload(
+        normalizedSections,
+      );
+
+      state = ExploreState(
+        isLoading: false,
+        greeting: greeting ?? _getLocalGreeting(),
+        providerId: AppSettings.homeFeedProviderSpotifyPersonal,
+        sections: sections,
+        lastFetched: DateTime.now(),
+      );
+      _saveToCache(normalizedSections, AppSettings.homeFeedProviderSpotifyPersonal);
+    } catch (e) {
+      _log.e('Error fetching personalized Spotify home feed: $e');
       if (requestId != _homeFeedRequestId) return;
       state = state.copyWith(isLoading: false, error: e.toString());
     }

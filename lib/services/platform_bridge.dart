@@ -1787,6 +1787,20 @@ class PlatformBridge {
     }
   }
 
+  static Future<Map<String, dynamic>?> getSpotifyPersonalHomeFeed(
+    String sessionCookie,
+  ) async {
+    try {
+      final result = await _channel.invokeMethod('getSpotifyPersonalHomeFeed', {
+        'session_cookie': sessionCookie,
+      });
+      return _decodeNullableMapResult(result, 'getSpotifyPersonalHomeFeed');
+    } catch (e) {
+      _log.e('getSpotifyPersonalHomeFeed failed: $e');
+      return null;
+    }
+  }
+
   static Future<Map<String, dynamic>?> getExtensionBrowseCategories(
     String extensionId,
   ) async {
