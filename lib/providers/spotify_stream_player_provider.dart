@@ -7,7 +7,8 @@ import 'package:spotiflac_android/providers/extension_provider.dart';
 import 'package:spotiflac_android/providers/music_player_provider.dart';
 import 'package:spotiflac_android/providers/settings_provider.dart';
 import 'package:spotiflac_android/services/download_request_payload.dart';
-import 'package:spotiflac_android/services/music_player_service.dart' show PlayableMedia;
+import 'package:spotiflac_android/services/music_player_service.dart'
+    show PlayableMedia, musicPlayerHandler;
 import 'package:spotiflac_android/services/platform_bridge.dart';
 import 'package:spotiflac_android/utils/logger.dart';
 
@@ -75,6 +76,23 @@ class StreamPlaybackState {
 class SpotifyStreamPlayerNotifier extends Notifier<StreamPlaybackState> {
   int _requestGeneration = 0;
 
+  // Track id whose streamTrack() call is currently in flight (downloading
+  // and about to hand off to the shared player). Guards against a double-tap
+  // on the same track starting a second downloadByStrategy call against the
+  // identical outputDir/filenameFormat path while the first is still writing
+  // to it — whose stale-file cleanup could otherwise delete the file the
+  // first call is actively writing, or delete the winner's file out from
+  // under the shared player after handoff. A call for a *different* track is
+  // not blocked; it legitimately supersedes the in-flight one via the
+  // generation counter below instead.
+  String? _inFlightTrackId;
+
+  // Path of the file most recently handed off to the shared player. Deleted
+  // at the start of the *next* non-duplicate streamTrack call rather than
+  // eagerly, so it isn't yanked out from under the shared player while it's
+  // still the one playing.
+  String? _lastHandedOffFilePath;
+
   @override
   StreamPlaybackState build() => const StreamPlaybackState();
 
@@ -109,104 +127,156 @@ class SpotifyStreamPlayerNotifier extends Notifier<StreamPlaybackState> {
   }
 
   Future<void> streamTrack(Track track) async {
-    final generation = ++_requestGeneration;
-
-    await _cleanupStaleFilesForTrack(track.id);
-
-    state = StreamPlaybackState(
-      currentTrack: track,
-      status: StreamPlaybackStatus.resolving,
-    );
-
-    final settings = ref.read(settingsProvider);
-    final extensionState = ref.read(extensionProvider);
-    final hasActiveExtensions = extensionState.extensions.any((e) => e.enabled);
-    final useExtensions = settings.useExtensionProviders && hasActiveExtensions;
-    final useFallback = settings.autoFallback;
-
-    if (!useExtensions) {
-      if (isStaleStreamRequest(currentGeneration: _requestGeneration, requestGeneration: generation)) {
-        return;
-      }
-      state = state.copyWith(
-        status: StreamPlaybackStatus.error,
-        error:
-            'Streaming requires at least one enabled extension provider. '
-            'Enable one in Settings > Extensions to stream tracks.',
-      );
+    if (isDuplicateStreamRequest(_inFlightTrackId, track.id)) {
+      _log.d('Ignoring duplicate streamTrack call for in-flight track ${track.id}');
       return;
     }
+    _inFlightTrackId = track.id;
+    final generation = ++_requestGeneration;
 
-    final dir = await _cacheDir();
-    state = state.copyWith(status: StreamPlaybackStatus.buffering);
+    // The shared player's current media item id when this request started —
+    // used below to detect whether something else (most notably, the local
+    // library player) has taken the shared player over by the time this
+    // request's download finishes, so a slow Spotify resolution can't
+    // silently clobber playback the user has already moved on to.
+    final baselineMediaItemId = musicPlayerHandler?.mediaItem.value?.id;
 
     try {
-      final response = await PlatformBridge.downloadByStrategy(
-        payload: DownloadRequestPayload(
-          isrc: track.isrc ?? '',
-          service: '',
-          spotifyId: track.id,
-          trackName: track.name,
-          artistName: track.artistName,
-          albumName: track.albumName,
-          albumArtist: track.albumArtist ?? '',
-          coverUrl: track.coverUrl ?? '',
-          outputDir: dir.path,
-          filenameFormat: streamCacheFileName(track.id),
-          quality: spotifyStreamQuality,
-          embedMetadata: false,
-          embedLyrics: false,
-          embedMaxQualityCover: false,
-          trackNumber: track.trackNumber ?? 0,
-          discNumber: track.discNumber ?? 0,
-          totalTracks: track.totalTracks ?? 1,
-          releaseDate: track.releaseDate ?? '',
-          itemId: track.id,
-          durationMs: track.duration * 1000,
-          source: '',
-        ),
-        useExtensions: useExtensions,
-        useFallback: useFallback,
-      );
-
-      if (isStaleStreamRequest(currentGeneration: _requestGeneration, requestGeneration: generation)) {
-        // A newer tap superseded this one while it was resolving; drop the
-        // result instead of handing a stale file off to the player.
-        final filePath = response['file_path'] as String?;
-        if (filePath != null && filePath.isNotEmpty) {
-          unawaited(_deleteFile(filePath));
-        }
-        return;
+      // Clean up the file from this notifier's last successful handoff now
+      // that a new, non-duplicate request is starting — not eagerly on
+      // completion, since the shared player may still be playing it.
+      final previousHandoffPath = _lastHandedOffFilePath;
+      _lastHandedOffFilePath = null;
+      if (previousHandoffPath != null) {
+        unawaited(_deleteFile(previousHandoffPath));
       }
 
-      if (response['success'] != true) {
-        throw Exception(response['error'] ?? 'Resolution failed');
-      }
-
-      final filePath = response['file_path'] as String?;
-      if (filePath == null || filePath.isEmpty) {
-        throw Exception('Download succeeded but returned no file_path');
-      }
-
-      state = state.copyWith(status: StreamPlaybackStatus.playing);
-      await ref.read(musicPlayerControllerProvider).playSingle(
-        PlayableMedia(
-          id: 'spotify-stream-${track.id}',
-          source: filePath,
-          title: track.name,
-          artist: track.artistName,
-          album: track.albumName,
-          artUri: track.coverUrl,
-          duration: track.duration > 0 ? Duration(seconds: track.duration) : null,
-        ),
-      );
-    } catch (e) {
-      if (isStaleStreamRequest(currentGeneration: _requestGeneration, requestGeneration: generation)) {
-        return;
-      }
-      _log.e('Stream resolution failed for "${track.name}"', e);
       await _cleanupStaleFilesForTrack(track.id);
-      state = state.copyWith(status: StreamPlaybackStatus.error, error: '$e');
+
+      state = StreamPlaybackState(
+        currentTrack: track,
+        status: StreamPlaybackStatus.resolving,
+      );
+
+      final settings = ref.read(settingsProvider);
+      final extensionState = ref.read(extensionProvider);
+      final hasActiveExtensions = extensionState.extensions.any((e) => e.enabled);
+      final useExtensions = settings.useExtensionProviders && hasActiveExtensions;
+      final useFallback = settings.autoFallback;
+
+      if (!useExtensions) {
+        if (isStaleStreamRequest(currentGeneration: _requestGeneration, requestGeneration: generation)) {
+          return;
+        }
+        state = state.copyWith(
+          status: StreamPlaybackStatus.error,
+          error:
+              'Streaming requires at least one enabled extension provider. '
+              'Enable one in Settings > Extensions to stream tracks.',
+        );
+        return;
+      }
+
+      final dir = await _cacheDir();
+      state = state.copyWith(status: StreamPlaybackStatus.buffering);
+
+      try {
+        final response = await PlatformBridge.downloadByStrategy(
+          payload: DownloadRequestPayload(
+            isrc: track.isrc ?? '',
+            service: '',
+            spotifyId: track.id,
+            trackName: track.name,
+            artistName: track.artistName,
+            albumName: track.albumName,
+            albumArtist: track.albumArtist ?? '',
+            coverUrl: track.coverUrl ?? '',
+            outputDir: dir.path,
+            filenameFormat: streamCacheFileName(track.id),
+            quality: spotifyStreamQuality,
+            embedMetadata: false,
+            embedLyrics: false,
+            embedMaxQualityCover: false,
+            trackNumber: track.trackNumber ?? 0,
+            discNumber: track.discNumber ?? 0,
+            totalTracks: track.totalTracks ?? 1,
+            releaseDate: track.releaseDate ?? '',
+            itemId: track.id,
+            durationMs: track.duration * 1000,
+            source: '',
+          ),
+          useExtensions: useExtensions,
+          useFallback: useFallback,
+        );
+
+        if (isStaleStreamRequest(currentGeneration: _requestGeneration, requestGeneration: generation)) {
+          // A newer tap superseded this one while it was resolving; drop the
+          // result instead of handing a stale file off to the player.
+          final filePath = response['file_path'] as String?;
+          if (filePath != null && filePath.isNotEmpty) {
+            unawaited(_deleteFile(filePath));
+          }
+          return;
+        }
+
+        if (response['success'] != true) {
+          throw Exception(response['error'] ?? 'Resolution failed');
+        }
+
+        final filePath = response['file_path'] as String?;
+        if (filePath == null || filePath.isEmpty) {
+          throw Exception('Download succeeded but returned no file_path');
+        }
+
+        final currentMediaItemId = musicPlayerHandler?.mediaItem.value?.id;
+        if (currentMediaItemId != baselineMediaItemId) {
+          // Something else (e.g. the user starting local library playback)
+          // took over the shared player while this request was resolving —
+          // don't clobber it with a stream the user has already moved past.
+          unawaited(_deleteFile(filePath));
+          return;
+        }
+
+        final controller = ref.read(musicPlayerControllerProvider);
+        final handler = await controller.ensureInitialized();
+        if (handler == null) {
+          // playSingle()/playAll() silently no-op when the shared player
+          // failed to initialize — surface that as an error here instead of
+          // leaving the UI stuck on "playing" with no audio.
+          _log.e('Music player failed to initialize; cannot play "${track.name}"');
+          unawaited(_deleteFile(filePath));
+          state = state.copyWith(
+            status: StreamPlaybackStatus.error,
+            error: 'Failed to start playback: the player is unavailable.',
+          );
+          return;
+        }
+
+        _lastHandedOffFilePath = filePath;
+        state = state.copyWith(status: StreamPlaybackStatus.playing);
+        await controller.playSingle(
+          PlayableMedia(
+            id: 'spotify-stream-${track.id}',
+            source: filePath,
+            title: track.name,
+            artist: track.artistName,
+            album: track.albumName,
+            artUri: track.coverUrl,
+            duration: track.duration > 0 ? Duration(seconds: track.duration) : null,
+          ),
+        );
+      } catch (e) {
+        if (isStaleStreamRequest(currentGeneration: _requestGeneration, requestGeneration: generation)) {
+          return;
+        }
+        _log.e('Stream resolution failed for "${track.name}"', e);
+        await _cleanupStaleFilesForTrack(track.id);
+        state = state.copyWith(status: StreamPlaybackStatus.error, error: '$e');
+      }
+    } finally {
+      if (_inFlightTrackId == track.id) {
+        _inFlightTrackId = null;
+      }
     }
   }
 
