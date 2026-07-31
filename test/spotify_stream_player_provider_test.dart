@@ -44,4 +44,14 @@ void main() {
       expect(isDuplicateStreamRequest('track-1', 'track-2'), isFalse);
     });
   });
+
+  group('isStaleStreamRequest', () {
+    test('a request is stale once a newer generation has started', () {
+      expect(isStaleStreamRequest(currentGeneration: 2, requestGeneration: 1), isTrue);
+    });
+
+    test('the current generation is not stale', () {
+      expect(isStaleStreamRequest(currentGeneration: 2, requestGeneration: 2), isFalse);
+    });
+  });
 }
