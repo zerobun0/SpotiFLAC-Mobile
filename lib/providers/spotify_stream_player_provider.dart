@@ -18,6 +18,12 @@ import 'package:spotiflac_android/utils/logger.dart';
 
 final _log = AppLogger('SpotifyStreamPlayer');
 
+/// Streaming plays back as soon as a track resolves, so it defaults to a
+/// fast/lossy tier rather than Download's full-LOSSLESS tier — "stream" means
+/// fast-start here, not archival quality. Use the app's existing explicit
+/// "Download" action (unchanged, still LOSSLESS-capable) for full quality.
+const spotifyStreamQuality = 'HIGH';
+
 String streamCacheFileName(String trackId) {
   final sanitized = trackId.replaceAll(RegExp(r'[^A-Za-z0-9_\-]'), '_');
   return 'stream_$sanitized';
@@ -227,7 +233,7 @@ class SpotifyStreamPlayerNotifier extends Notifier<StreamPlaybackState> {
             coverUrl: track.coverUrl ?? '',
             outputDir: dir.path,
             filenameFormat: streamCacheFileName(track.id),
-            quality: 'LOSSLESS',
+            quality: spotifyStreamQuality,
             embedMetadata: false,
             embedLyrics: false,
             embedMaxQualityCover: false,
