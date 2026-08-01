@@ -310,6 +310,14 @@ class RepoNotifier extends Notifier<RepoState> {
   /// installed one with an available update, using the exact same
   /// install/upgrade calls the Store tab's manual buttons already make. Safe
   /// to call repeatedly — extensions already up to date are skipped.
+  ///
+  /// Newly-installed extensions are force-enabled: the native extension
+  /// manager loads every extension with `Enabled: false`, so without this an
+  /// auto-bundled install would leave the app with nine installed-but-inert
+  /// providers and streaming/search failing with "requires at least one
+  /// enabled extension provider". Extensions taking the *update* path are
+  /// deliberately left alone — those were already installed, and the user
+  /// may have disabled one on purpose.
   Future<void> autoSyncExtensions() async {
     final targets = extensionsNeedingSync(state.extensions);
     if (targets.isEmpty) return;
@@ -318,16 +326,49 @@ class RepoNotifier extends Notifier<RepoState> {
     final appDir = await getApplicationDocumentsDirectory();
     final extensionsDir = '${appDir.path}/extensions';
 
+    var anySynced = false;
     for (final ext in targets) {
-      final success = !ext.isInstalled
-          ? await installExtension(ext.id, tempDir.path, extensionsDir)
-          : await updateExtension(ext.id, tempDir.path);
+      final isFreshInstall = !ext.isInstalled;
+      // Each install/update normally re-fetches the whole registry on
+      // success; suppressed here so a 9-extension cold start doesn't do
+      // 9 extra serialized network round-trips during app startup. One
+      // refresh() covers the whole batch after the loop instead.
+      final success = isFreshInstall
+          ? await installExtension(
+              ext.id,
+              tempDir.path,
+              extensionsDir,
+              refreshRegistry: false,
+            )
+          : await updateExtension(
+              ext.id,
+              tempDir.path,
+              refreshRegistry: false,
+            );
 
       if (!success) {
         // Logged only — a single extension failing to auto-sync shouldn't
         // surface as a lingering registry-level error (see initialize()).
         _log.w('Auto-sync failed for extension: ${ext.id}');
+        continue;
       }
+
+      anySynced = true;
+      if (!isFreshInstall) continue;
+
+      try {
+        await ref
+            .read(extensionProvider.notifier)
+            .setExtensionEnabled(ext.id, true);
+      } catch (e) {
+        // One extension failing to enable must not abort the rest of the
+        // sync — the remaining extensions are still worth installing.
+        _log.w('Failed to auto-enable newly installed extension ${ext.id}: $e');
+      }
+    }
+
+    if (anySynced) {
+      await refresh();
     }
   }
 
@@ -433,21 +474,31 @@ class RepoNotifier extends Notifier<RepoState> {
     state = state.copyWith(searchQuery: '', clearCategory: true);
   }
 
+  /// Set [refreshRegistry] to false to skip the post-install registry
+  /// re-fetch — used by [autoSyncExtensions], which batches a single
+  /// `refresh()` after the whole loop instead of one per extension.
   Future<bool> installExtension(
     String extensionId,
     String tempDir,
-    String extensionsDir,
-  ) {
+    String extensionsDir, {
+    bool refreshRegistry = true,
+  }) {
     return _runSerialized(
-      () => _installExtensionInternal(extensionId, tempDir, extensionsDir),
+      () => _installExtensionInternal(
+        extensionId,
+        tempDir,
+        extensionsDir,
+        refreshRegistry: refreshRegistry,
+      ),
     );
   }
 
   Future<bool> _installExtensionInternal(
     String extensionId,
     String tempDir,
-    String extensionsDir,
-  ) async {
+    String extensionsDir, {
+    bool refreshRegistry = true,
+  }) async {
     state = state.copyWith(
       isDownloading: true,
       downloadingId: extensionId,
@@ -467,7 +518,7 @@ class RepoNotifier extends Notifier<RepoState> {
 
       if (success) {
         _log.i('Extension installed: $extensionId');
-        await refresh();
+        if (refreshRegistry) await refresh();
       }
 
       state = state.copyWith(isDownloading: false, clearDownloadingId: true);
@@ -483,16 +534,26 @@ class RepoNotifier extends Notifier<RepoState> {
     }
   }
 
-  Future<bool> updateExtension(String extensionId, String tempDir) {
+  /// See [installExtension] for [refreshRegistry].
+  Future<bool> updateExtension(
+    String extensionId,
+    String tempDir, {
+    bool refreshRegistry = true,
+  }) {
     return _runSerialized(
-      () => _updateExtensionInternal(extensionId, tempDir),
+      () => _updateExtensionInternal(
+        extensionId,
+        tempDir,
+        refreshRegistry: refreshRegistry,
+      ),
     );
   }
 
   Future<bool> _updateExtensionInternal(
     String extensionId,
-    String tempDir,
-  ) async {
+    String tempDir, {
+    bool refreshRegistry = true,
+  }) async {
     state = state.copyWith(
       isDownloading: true,
       downloadingId: extensionId,
@@ -512,7 +573,7 @@ class RepoNotifier extends Notifier<RepoState> {
 
       if (success) {
         _log.i('Extension updated: $extensionId');
-        await refresh();
+        if (refreshRegistry) await refresh();
       }
 
       state = state.copyWith(isDownloading: false, clearDownloadingId: true);
