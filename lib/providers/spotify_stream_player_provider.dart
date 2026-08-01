@@ -118,9 +118,10 @@ class SpotifyStreamPlayerNotifier extends Notifier<StreamPlaybackState> {
         final segments = entity.uri.pathSegments;
         final name = segments.isNotEmpty ? segments.last : entity.path;
         if (name == prefix || name.startsWith('$prefix.')) {
-          try {
-            await entity.delete();
-          } catch (_) {}
+          // Same reasoning as _deleteFile: a leftover file from a previous
+          // attempt at this same track id may still be sitting in the
+          // shared player's queue.
+          await _deleteFile(entity.path);
         }
       }
     } catch (_) {}
@@ -280,10 +281,22 @@ class SpotifyStreamPlayerNotifier extends Notifier<StreamPlaybackState> {
     }
   }
 
+  /// Deletes a stream cache file *and* tells the shared player about it.
+  ///
+  /// Every path this notifier deletes may already be queued in the shared
+  /// player (the previous handoff, or an aborted one). Raw `File.delete()`
+  /// would leave a stale queue entry pointing at a file that no longer
+  /// exists; `onSourceDeleted` drops it from the queue and advances/stops
+  /// playback as needed. This mirrors `deleteFile()` in `utils/file_access.dart`,
+  /// which is this codebase's convention for exactly that situation.
   Future<void> _deleteFile(String path) async {
+    if (path.isEmpty) return;
     try {
       final file = File(path);
       if (await file.exists()) await file.delete();
+    } catch (_) {}
+    try {
+      await musicPlayerHandler?.onSourceDeleted(path);
     } catch (_) {}
   }
 }

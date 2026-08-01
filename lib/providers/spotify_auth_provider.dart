@@ -6,6 +6,7 @@ import 'package:url_launcher/url_launcher.dart';
 import 'package:spotiflac_android/constants/spotify_config.dart';
 import 'package:spotiflac_android/services/spotify_auth_service.dart';
 import 'package:spotiflac_android/services/spotify_pkce.dart';
+import 'package:spotiflac_android/services/spotify_web_session.dart';
 import 'package:spotiflac_android/services/platform_bridge.dart';
 import 'package:spotiflac_android/utils/logger.dart';
 
@@ -234,8 +235,14 @@ class SpotifyAuthNotifier extends Notifier<SpotifyAuthState>
   /// revoked access on Spotify's side) passes a "please reconnect" message
   /// so the UI doesn't keep claiming "Connected to Spotify" while every
   /// actual API call is failing.
+  ///
+  /// Also revokes the separately-captured `sp_dc` web session cookie and the
+  /// WebView cookie jar behind it: that credential is a real user session
+  /// too, so leaving it on-device after a logout would keep the personalized
+  /// home feed authenticated as an account the user just disconnected.
   Future<void> logout({String? error}) async {
     await _service.clearStoredTokens();
+    await clearSpotifyWebSession();
     state = SpotifyAuthState(status: SpotifyAuthStatus.loggedOut, error: error);
   }
 

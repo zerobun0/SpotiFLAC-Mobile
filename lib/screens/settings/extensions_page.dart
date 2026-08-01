@@ -4,6 +4,8 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:path_provider/path_provider.dart';
+import 'package:spotiflac_android/constants/spotify_config.dart'
+    show spotifySessionCookieStorageKey;
 import 'package:spotiflac_android/l10n/l10n.dart';
 import 'package:spotiflac_android/models/settings.dart';
 import 'package:spotiflac_android/providers/extension_provider.dart';
@@ -14,6 +16,7 @@ import 'package:spotiflac_android/screens/settings/extension_detail_page.dart';
 import 'package:spotiflac_android/screens/settings/metadata_provider_priority_page.dart';
 import 'package:spotiflac_android/screens/settings/provider_priority_page.dart';
 import 'package:spotiflac_android/screens/spotify/spotify_web_login_screen.dart';
+import 'package:spotiflac_android/services/spotify_web_session.dart';
 import 'package:spotiflac_android/widgets/settings_group.dart';
 import 'package:spotiflac_android/widgets/settings_sliver_app_bar.dart';
 
@@ -1014,6 +1017,44 @@ class _HomeFeedProviderSelector extends ConsumerWidget {
                         AppSettings.homeFeedProviderSpotifyPersonal,
                       );
                   ref.read(exploreProvider.notifier).refresh();
+                },
+              ),
+              // Revocation affordance for the captured web session. Only
+              // shown when a session actually exists, so the picker isn't
+              // cluttered for users who never connected an account.
+              FutureBuilder<String?>(
+                future: const FlutterSecureStorage().read(
+                  key: spotifySessionCookieStorageKey,
+                ),
+                builder: (_, snapshot) {
+                  final cookie = snapshot.data;
+                  if (cookie == null || cookie.isEmpty) {
+                    return const SizedBox.shrink();
+                  }
+                  return ListTile(
+                    leading: Icon(Icons.link_off, color: colorScheme.error),
+                    title: const Text('Disconnect Spotify account'),
+                    subtitle: const Text(
+                      'Clears the saved Spotify web session and cookies',
+                    ),
+                    onTap: () async {
+                      Navigator.pop(ctx);
+                      await clearSpotifyWebSession();
+                      if (ref.read(settingsProvider).homeFeedProvider ==
+                          AppSettings.homeFeedProviderSpotifyPersonal) {
+                        ref
+                            .read(settingsProvider.notifier)
+                            .setHomeFeedProvider(null);
+                      }
+                      ref.read(exploreProvider.notifier).refresh();
+                      if (!context.mounted) return;
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        const SnackBar(
+                          content: Text('Disconnected your Spotify account'),
+                        ),
+                      );
+                    },
+                  );
                 },
               ),
               if (homeFeedProviders.isEmpty)
