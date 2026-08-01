@@ -3,9 +3,9 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:shared_preferences/shared_preferences.dart';
-import 'package:spotiflac_android/models/settings.dart';
-import 'package:spotiflac_android/screens/spotify/spotify_web_login_screen.dart'
+import 'package:spotiflac_android/constants/spotify_config.dart'
     show spotifySessionCookieStorageKey;
+import 'package:spotiflac_android/models/settings.dart';
 import 'package:spotiflac_android/services/platform_bridge.dart';
 import 'package:spotiflac_android/utils/logger.dart';
 import 'package:spotiflac_android/providers/extension_provider.dart';
@@ -540,14 +540,21 @@ class ExploreNotifier extends Notifier<ExploreState> {
         normalizedSections,
       );
 
+      // providerId is deliberately left null (and cached as empty) rather
+      // than set to the `spotify-personal` settings sentinel. Consumers —
+      // notably home_tab's `_providerIdForExploreItem` — treat this field as
+      // a real installed-extension id and hand it to
+      // ExtensionAlbumScreen/ExtensionPlaylistScreen/`Track.source`. There is
+      // no extension backing this first-party feed, so a null id is what
+      // routes item taps to the existing graceful "no provider" message
+      // instead of failing against a nonexistent extension.
       state = ExploreState(
         isLoading: false,
         greeting: greeting ?? _getLocalGreeting(),
-        providerId: AppSettings.homeFeedProviderSpotifyPersonal,
         sections: sections,
         lastFetched: DateTime.now(),
       );
-      _saveToCache(normalizedSections, AppSettings.homeFeedProviderSpotifyPersonal);
+      _saveToCache(normalizedSections, '');
     } catch (e) {
       _log.e('Error fetching personalized Spotify home feed: $e');
       if (requestId != _homeFeedRequestId) return;

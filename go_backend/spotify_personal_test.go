@@ -2,7 +2,9 @@
 package gobackend
 
 import (
+	"bytes"
 	"encoding/json"
+	"strings"
 	"testing"
 )
 
@@ -79,8 +81,11 @@ func TestFormatSpotifyHomeFeedResponse(t *testing.T) {
 	if item["duration_ms"] != 210000 {
 		t.Fatalf("unexpected duration_ms: %v", item["duration_ms"])
 	}
-	if item["provider_id"] != "spotify-personal" {
-		t.Fatalf("expected provider_id spotify-personal, got %v", item["provider_id"])
+	// Empty, not a "spotify-personal" sentinel: the Flutter side treats
+	// provider_id as a real installed-extension id, and there is no
+	// extension behind this first-party feed.
+	if item["provider_id"] != "" {
+		t.Fatalf("expected an empty provider_id, got %v", item["provider_id"])
 	}
 }
 
@@ -121,8 +126,11 @@ func TestFormatSpotifyHomeFeedItemUnknownTypeIsNotDropped(t *testing.T) {
 	if item["cover_url"] != "" {
 		t.Fatalf("expected empty cover_url for unhandled type, got %v", item["cover_url"])
 	}
-	if item["provider_id"] != "spotify-personal" {
-		t.Fatalf("expected provider_id spotify-personal, got %v", item["provider_id"])
+	// Empty, not a "spotify-personal" sentinel: the Flutter side treats
+	// provider_id as a real installed-extension id, and there is no
+	// extension behind this first-party feed.
+	if item["provider_id"] != "" {
+		t.Fatalf("expected an empty provider_id, got %v", item["provider_id"])
 	}
 }
 
@@ -179,5 +187,33 @@ func TestFormatSpotifyHomeFeedResponseKeepsSectionOfOnlyUnknownTypes(t *testing.
 	}
 	if items[0]["type"] != "episode" || items[0]["id"] != "ep789" {
 		t.Fatalf("unexpected item id/type: %v/%v", items[0]["id"], items[0]["type"])
+	}
+}
+
+// TestTruncateSpotifyErrorBody guards the cap on how much of an upstream
+// error response is allowed into an error string — that string is surfaced
+// verbatim in the Home tab and written to the app log, so an arbitrarily
+// large (or session-scoped) partner-API body must never pass through whole.
+func TestTruncateSpotifyErrorBody(t *testing.T) {
+	short := []byte("boom")
+	if got := truncateSpotifyErrorBody(short); got != "boom" {
+		t.Fatalf("expected a short body to pass through unchanged, got %q", got)
+	}
+
+	exact := bytes.Repeat([]byte("a"), spotifyErrorBodyLimit)
+	if got := truncateSpotifyErrorBody(exact); got != string(exact) {
+		t.Fatalf("expected a body at exactly the limit to pass through unchanged, got %d bytes", len(got))
+	}
+
+	long := bytes.Repeat([]byte("a"), spotifyErrorBodyLimit*10)
+	got := truncateSpotifyErrorBody(long)
+	if len(got) >= len(long) {
+		t.Fatalf("expected an oversized body to be truncated, got %d bytes", len(got))
+	}
+	if !strings.HasSuffix(got, "... (truncated)") {
+		t.Fatalf("expected a truncation marker, got %q", got)
+	}
+	if !strings.HasPrefix(got, string(exact)) {
+		t.Fatalf("expected the first %d bytes to be preserved", spotifyErrorBodyLimit)
 	}
 }

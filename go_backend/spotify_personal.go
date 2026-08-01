@@ -237,6 +237,18 @@ func mergeSpotifySetCookies(cookies map[string]string, setCookieHeaders []string
 	}
 }
 
+// spotifyErrorBodyLimit caps how much of an upstream error response body is
+// allowed into an error string. Enough to identify the failure, far short of
+// dumping an arbitrarily large (or session-scoped) payload into the UI/logs.
+const spotifyErrorBodyLimit = 300
+
+func truncateSpotifyErrorBody(body []byte) string {
+	if len(body) <= spotifyErrorBodyLimit {
+		return string(body)
+	}
+	return string(body[:spotifyErrorBodyLimit]) + "... (truncated)"
+}
+
 func fetchSpotifyHomeFeed(ctx context.Context, client *http.Client, session *spotifyPersonalSession) (map[string]any, error) {
 	payload := map[string]any{
 		"operationName": "home",
@@ -272,7 +284,14 @@ func fetchSpotifyHomeFeed(ctx context.Context, client *http.Client, session *spo
 		return nil, err
 	}
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("home feed query returned %d: %s", resp.StatusCode, string(body))
+		// This error string reaches the Home tab UI and the app log verbatim,
+		// so the upstream body is truncated: a partner-API error response can
+		// be arbitrarily large and may echo back session-scoped details.
+		return nil, fmt.Errorf(
+			"home feed query returned %d: %s",
+			resp.StatusCode,
+			truncateSpotifyErrorBody(body),
+		)
 	}
 	var parsed map[string]any
 	if err := json.Unmarshal(body, &parsed); err != nil {
@@ -462,7 +481,14 @@ func formatSpotifyHomeFeedItem(rawItem any) (map[string]any, bool) {
 		"album_id":    albumID,
 		"album_name":  albumName,
 		"duration_ms": int(durationMs),
-		"provider_id": "spotify-personal",
+		// Deliberately empty rather than a "spotify-personal" sentinel: the
+		// Flutter side treats provider_id as a real *installed extension* id
+		// (it feeds ExtensionAlbumScreen/ExtensionPlaylistScreen and
+		// Track.source). There is no extension behind this first-party feed,
+		// so an empty id is what routes taps into the existing graceful
+		// "no provider available for this item" path instead of failing
+		// against a nonexistent extension.
+		"provider_id": "",
 	}, true
 }
 
