@@ -73,6 +73,46 @@ class StreamPlaybackState {
   }
 }
 
+/// The narrow slice of the shared music player that
+/// [SpotifyStreamPlayerNotifier] talks to.
+///
+/// Exists as a seam so the handoff ordering — which is where every bug in
+/// this file has lived — can be exercised in a plain unit test. The real
+/// `MusicPlayerHandler` is an `audio_service` `BaseAudioHandler` that cannot
+/// be constructed in a test, so without this indirection the notifier's
+/// interaction with the player is untestable and regressions here are
+/// invisible to the suite. Production always uses the default instance,
+/// which forwards straight to the global handler.
+class StreamPlayerHandoff {
+  const StreamPlayerHandoff();
+
+  /// Media id the shared player is currently showing, or null when it is
+  /// stopped / has nothing queued.
+  String? currentMediaItemId() => musicPlayerHandler?.mediaItem.value?.id;
+
+  /// Tells the shared player that [path] no longer exists, so it can drop
+  /// any queue entry pointing at it.
+  Future<void> onSourceDeleted(String path) async {
+    await musicPlayerHandler?.onSourceDeleted(path);
+  }
+
+  /// True once the shared player is initialized and able to accept a handoff.
+  Future<bool> ensureReady(MusicPlayerController controller) async {
+    return await controller.ensureInitialized() != null;
+  }
+
+  /// Hands [media] to the shared player as its sole queue entry.
+  Future<void> play(MusicPlayerController controller, PlayableMedia media) {
+    return controller.playSingle(media);
+  }
+}
+
+/// Injection point for [StreamPlayerHandoff] — overridden in tests, always
+/// the real forwarding implementation in production.
+final streamPlayerHandoffProvider = Provider<StreamPlayerHandoff>(
+  (ref) => const StreamPlayerHandoff(),
+);
+
 class SpotifyStreamPlayerNotifier extends Notifier<StreamPlaybackState> {
   int _requestGeneration = 0;
 
@@ -87,10 +127,17 @@ class SpotifyStreamPlayerNotifier extends Notifier<StreamPlaybackState> {
   // generation counter below instead.
   String? _inFlightTrackId;
 
-  // Path of the file most recently handed off to the shared player. Deleted
-  // at the start of the *next* non-duplicate streamTrack call rather than
-  // eagerly, so it isn't yanked out from under the shared player while it's
-  // still the one playing.
+  // Path of the file most recently handed off to the shared player — i.e.
+  // the file the shared player is, as far as this notifier knows, still
+  // holding as its sole queue entry.
+  //
+  // Deleted only once the *next* request has successfully replaced it via
+  // playSingle, never earlier. Deleting it at the start of the next request
+  // (as an earlier revision did) is wrong twice over: the shared player may
+  // still be playing it, and notifying the player about that deletion empties
+  // its one-entry queue, which stops playback and nulls out `mediaItem` —
+  // the exact value the in-flight request's takeover-abort check compares
+  // against, so every subsequent stream would abort itself.
   String? _lastHandedOffFilePath;
 
   @override
@@ -140,18 +187,16 @@ class SpotifyStreamPlayerNotifier extends Notifier<StreamPlaybackState> {
     // library player) has taken the shared player over by the time this
     // request's download finishes, so a slow Spotify resolution can't
     // silently clobber playback the user has already moved on to.
-    final baselineMediaItemId = musicPlayerHandler?.mediaItem.value?.id;
+    final handoff = ref.read(streamPlayerHandoffProvider);
+    final baselineMediaItemId = handoff.currentMediaItemId();
 
     try {
-      // Clean up the file from this notifier's last successful handoff now
-      // that a new, non-duplicate request is starting — not eagerly on
-      // completion, since the shared player may still be playing it.
-      final previousHandoffPath = _lastHandedOffFilePath;
-      _lastHandedOffFilePath = null;
-      if (previousHandoffPath != null) {
-        unawaited(_deleteFile(previousHandoffPath));
-      }
-
+      // NOTE: the previous handoff's file is deliberately *not* deleted here.
+      // It is still what the shared player is playing, and touching it now
+      // would both yank a playing file and (via onSourceDeleted) stop the
+      // player, breaking this request's own takeover-abort check below. It
+      // is cleaned up after this request's playSingle succeeds instead —
+      // see _lastHandedOffFilePath.
       await _cleanupStaleFilesForTrack(track.id);
 
       state = StreamPlaybackState(
@@ -229,7 +274,7 @@ class SpotifyStreamPlayerNotifier extends Notifier<StreamPlaybackState> {
           throw Exception('Download succeeded but returned no file_path');
         }
 
-        final currentMediaItemId = musicPlayerHandler?.mediaItem.value?.id;
+        final currentMediaItemId = handoff.currentMediaItemId();
         if (currentMediaItemId != baselineMediaItemId) {
           // Something else (e.g. the user starting local library playback)
           // took over the shared player while this request was resolving —
@@ -239,8 +284,8 @@ class SpotifyStreamPlayerNotifier extends Notifier<StreamPlaybackState> {
         }
 
         final controller = ref.read(musicPlayerControllerProvider);
-        final handler = await controller.ensureInitialized();
-        if (handler == null) {
+        final playerReady = await handoff.ensureReady(controller);
+        if (!playerReady) {
           // playSingle()/playAll() silently no-op when the shared player
           // failed to initialize — surface that as an error here instead of
           // leaving the UI stuck on "playing" with no audio.
@@ -253,9 +298,11 @@ class SpotifyStreamPlayerNotifier extends Notifier<StreamPlaybackState> {
           return;
         }
 
+        final previousHandoffPath = _lastHandedOffFilePath;
         _lastHandedOffFilePath = filePath;
         state = state.copyWith(status: StreamPlaybackStatus.playing);
-        await controller.playSingle(
+        await handoff.play(
+          controller,
           PlayableMedia(
             id: 'spotify-stream-${track.id}',
             source: filePath,
@@ -266,6 +313,17 @@ class SpotifyStreamPlayerNotifier extends Notifier<StreamPlaybackState> {
             duration: track.duration > 0 ? Duration(seconds: track.duration) : null,
           ),
         );
+
+        // Safe only now: this request's file is the shared player's sole
+        // queue entry, so the previous one is genuinely orphaned and
+        // onSourceDeleted on it matches nothing (no stop, no null mediaItem).
+        // Doing this here rather than at the start of the next request also
+        // means an aborted request never deletes a file that is still
+        // playing — the path stays in _lastHandedOffFilePath and is reaped by
+        // whichever request next succeeds, so nothing leaks either.
+        if (previousHandoffPath != null && previousHandoffPath != filePath) {
+          unawaited(_deleteFile(previousHandoffPath));
+        }
       } catch (e) {
         if (isStaleStreamRequest(currentGeneration: _requestGeneration, requestGeneration: generation)) {
           return;
@@ -281,22 +339,29 @@ class SpotifyStreamPlayerNotifier extends Notifier<StreamPlaybackState> {
     }
   }
 
-  /// Deletes a stream cache file *and* tells the shared player about it.
+  /// Deletes a stream cache file *and* tells the shared player about it, so
+  /// a deleted file never lingers as a stale queue entry — mirroring
+  /// `deleteFile()` in `utils/file_access.dart`, this codebase's convention
+  /// for deleting something the player might be holding.
   ///
-  /// Every path this notifier deletes may already be queued in the shared
-  /// player (the previous handoff, or an aborted one). Raw `File.delete()`
-  /// would leave a stale queue entry pointing at a file that no longer
-  /// exists; `onSourceDeleted` drops it from the queue and advances/stops
-  /// playback as needed. This mirrors `deleteFile()` in `utils/file_access.dart`,
-  /// which is this codebase's convention for exactly that situation.
+  /// The one case that must NOT be reported is a path that is still the
+  /// player's current entry from this notifier's last handoff: removing it
+  /// empties a one-entry queue, which stops playback and nulls out
+  /// `mediaItem` — and `streamTrack`'s takeover-abort check compares against
+  /// exactly that value, so reporting it mid-request makes the request
+  /// conclude it was superseded and silently abort. Such a path is only ever
+  /// deleted here as part of being replaced, and the replacement's
+  /// `playSingle` resets the queue anyway.
   Future<void> _deleteFile(String path) async {
     if (path.isEmpty) return;
+    final isPlayersCurrentSource = path == _lastHandedOffFilePath;
     try {
       final file = File(path);
       if (await file.exists()) await file.delete();
     } catch (_) {}
+    if (isPlayersCurrentSource) return;
     try {
-      await musicPlayerHandler?.onSourceDeleted(path);
+      await ref.read(streamPlayerHandoffProvider).onSourceDeleted(path);
     } catch (_) {}
   }
 }
