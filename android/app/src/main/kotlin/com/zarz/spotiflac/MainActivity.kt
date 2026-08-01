@@ -3678,6 +3678,15 @@ class MainActivity: FlutterFragmentActivity() {
                             }
                             result.success(response)
                         }
+                        "getWebViewCookie" -> {
+                            // Local Android API, not a Go call — no Dispatchers.IO
+                            // hop needed. CookieManager exposes HttpOnly cookies
+                            // (e.g. Spotify's sp_dc), which the WebView's own
+                            // JavaScript `document.cookie` deliberately cannot see.
+                            val url = call.argument<String>("url") ?: ""
+                            val cookie = android.webkit.CookieManager.getInstance().getCookie(url)
+                            result.success(cookie)
+                        }
                         "getExtensionBrowseCategories" -> {
                             val extensionId = call.argument<String>("extension_id") ?: ""
                             val response = withContext(Dispatchers.IO) {

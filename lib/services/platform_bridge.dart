@@ -1801,6 +1801,23 @@ class PlatformBridge {
     }
   }
 
+  /// Raw cookie header for [url] as seen by Android's native `CookieManager`.
+  ///
+  /// Unlike JavaScript's `document.cookie`, this includes `HttpOnly` cookies
+  /// — which is the only way to read Spotify's `sp_dc` session cookie out of
+  /// the embedded login WebView.
+  static Future<String?> getWebViewCookie(String url) async {
+    try {
+      final result = await _channel.invokeMethod('getWebViewCookie', {
+        'url': url,
+      });
+      return result as String?;
+    } catch (e) {
+      _log.e('getWebViewCookie failed: $e');
+      return null;
+    }
+  }
+
   static Future<Map<String, dynamic>?> getExtensionBrowseCategories(
     String extensionId,
   ) async {

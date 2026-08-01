@@ -25,4 +25,36 @@ void main() {
       );
     });
   });
+
+  group('isSpotifyWebPlayerUrl', () {
+    test('matches the real logged-in web player', () {
+      expect(isSpotifyWebPlayerUrl('https://open.spotify.com/'), isTrue);
+      expect(
+        isSpotifyWebPlayerUrl('https://open.spotify.com/collection/tracks'),
+        isTrue,
+      );
+    });
+
+    test('rejects a lookalike host that merely starts with the prefix', () {
+      // The old `url.startsWith('https://open.spotify.com')` check accepted
+      // this, which would have leaked a cookie read to an attacker origin.
+      expect(
+        isSpotifyWebPlayerUrl('https://open.spotify.com.evil.com/'),
+        isFalse,
+      );
+      expect(
+        isSpotifyWebPlayerUrl('https://open.spotify.com.evil.com/collection'),
+        isFalse,
+      );
+    });
+
+    test('rejects unrelated hosts and the login page itself', () {
+      expect(
+        isSpotifyWebPlayerUrl('https://accounts.spotify.com/login'),
+        isFalse,
+      );
+      expect(isSpotifyWebPlayerUrl('https://example.com'), isFalse);
+      expect(isSpotifyWebPlayerUrl('not a url at all'), isFalse);
+    });
+  });
 }
